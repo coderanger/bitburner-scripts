@@ -1,7 +1,22 @@
-import { Chain, Context, ExecuteChain, RunChainStep, Step } from "./descisionTree"
+import { Context, Execute, RunChainStep, Step } from "./descisionTree"
 import type { NS } from "@ns"
 
 const CRIME_GANG_FACTIONS = ["Slum Snakes", "Tetrads", "The Syndicate"]
+const GANG_MEMBER_NAMES = [
+  "Number One",
+  "Snake Eyes",
+  "Trip",
+  "Club",
+  "Cinque",
+  "Hexadecimal",
+  "Lucky",
+  "Spider",
+  "K-9",
+  "Big Top",
+  "Pskyer",
+  "Baker",
+  "Crow",
+]
 
 type AscensionStats = Record<string, { current: number; next: number }>
 
@@ -37,13 +52,14 @@ function UpgradeGangMemberSteps(gangMember: string) {
           let ready
           if (stat.current < 30) {
             const threshold = stat.current < 10 ? 2 : 5
-            ready = stat.current - (stat.current % threshold) + threshold >= stat.next
+            ready = stat.current - (stat.current % threshold) + threshold <= stat.next
           } else {
             // Just don't care past 30.
             ready = false
           }
           readyStats[statName] = ready
         }
+        ctx.log.trace(`Ascension ready stats ${JSON.stringify(readyStats)}`)
         return (
           readyStats.hack || readyStats.chr || (readyStats.str && readyStats.def && readyStats.dex)
         )
@@ -53,11 +69,16 @@ function UpgradeGangMemberSteps(gangMember: string) {
         for (const statName in stats) {
           const stat = stats[statName]
           const increase = stat.next - stat.current
-          if (increase >= 2) {
+          if (increase >= 0.1) {
             increases.push({ statName, increase })
           }
         }
         increases.sort((a, b) => b.increase - a.increase)
+        if (increases.length === 0) {
+          throw `Error trying to ascend ${gangMember} but found no increases ${JSON.stringify(
+            stats
+          )}`
+        }
         ctx.log.info(
           `Ascending ${gangMember}: ${increases
             .map(
@@ -113,29 +134,176 @@ function UpgradeGangMemberSteps(gangMember: string) {
   ]
 }
 
-export function GangChain() {
-  return new Chain("Gang", [
+// function SetGangTaskAction(taskName: string) {
+//   return (ctx: Context) => {
+//     for (const member of ctx.ns.gang.getMemberNames()) {
+//       ctx.ns.gang.setMemberTask(member, taskName)
+//     }
+//     return true
+//   }
+// }
+
+const TASKS_TO_CONSIDER = ["Mug People", "Human Trafficking", "Terrorism"]
+
+function getBestTasks(ctx: Context, gangMember: string) {
+  const gangInfo = ctx.ns.gang.getGangInformation()
+  const memberInfo = ctx.ns.gang.getMemberInformation(gangMember)
+  // const tasks = ctx.ns.gang.getTaskNames().map((taskName) => {
+  const tasks = TASKS_TO_CONSIDER.map((taskName) => {
+    const taskStats = ctx.ns.gang.getTaskStats(taskName)
+    return {
+      taskName,
+      respect: ctx.ns.formulas.gang.respectGain(gangInfo, memberInfo, taskStats),
+      money: ctx.ns.formulas.gang.moneyGain(gangInfo, memberInfo, taskStats),
+    }
+  })
+  const bestRespect = tasks.reduce((prev, current) =>
+    current.respect > prev.respect ? current : prev
+  )
+  const bestMoney = tasks.reduce((prev, current) => (current.money > prev.money ? current : prev))
+  return {
+    respect: bestRespect.respect,
+    respectTask: bestRespect.taskName,
+    money: bestMoney.money,
+    moneyTask: bestMoney.taskName,
+  }
+}
+
+function TaskGangMemberSteps(gangMember: string) {
+  const cachedBestTasksKey = `gangTasks-${gangMember}`
+  const cachedBestTasks = (ctx: Context) =>
+    ctx.onceData[cachedBestTasksKey] as ReturnType<typeof getBestTasks>
+
+  return [
+    new Step({
+      name: "BootstrapSkillUpTask",
+      gather: (ctx: Context) => {
+        ctx.onceData[cachedBestTasksKey] = getBestTasks(ctx, gangMember)
+      },
+      predicate: (ctx: Context) =>
+        ctx.ns.gang.getMemberNames().length < 12 && cachedBestTasks(ctx).respect <= 10,
+      log: () => `Tasking ${gangMember} to train for bootstrapping`,
+      action: (ctx: Context) => {
+        ctx.ns.gang.setMemberTask(gangMember, "Train Combat")
+        return true
+      },
+    }),
+
+    new Step({
+      name: "BootstrapRespectTask",
+      gather: () => undefined,
+      predicate: (ctx: Context) => ctx.ns.gang.getMemberNames().length < 12,
+      log: (ctx: Context) =>
+        `Tasking ${gangMember} to ${
+          cachedBestTasks(ctx).respectTask
+        } respect until we have 12 members`,
+      action: (ctx: Context) => {
+        ctx.ns.gang.setMemberTask(gangMember, cachedBestTasks(ctx).respectTask)
+        return true
+      },
+    }),
+
+    new Step({
+      name: "ReduceWantedTask",
+      gather: () => undefined,
+      predicate: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel >= 100,
+      log: () => `Tasking ${gangMember} to Vigilante Justice to reduce wanted level`,
+      action: (ctx: Context) => {
+        ctx.ns.gang.setMemberTask(gangMember, "Vigilante Justice")
+        return true
+      },
+    }),
+
+    new Step({
+      name: "ManualTask",
+      gather: (ctx: Context): [string, string] => {
+        const fileData = (ctx.ns.read("gangManual.txt") as string).trim()
+        if (fileData === "respect" || fileData === "money") {
+          const tasks = cachedBestTasks(ctx)
+          switch (fileData) {
+            case "respect":
+              return ["respect", tasks.respectTask]
+            case "money":
+              return ["money", tasks.moneyTask]
+          }
+        } else {
+          return ["", ""]
+        }
+      },
+      predicate: (ctx: Context, [goal]: [string, string]) => goal !== "",
+      log: (ctx: Context, [goal, task]: [string, string]) =>
+        `Tasking ${gangMember} to ${task} from manual override for ${goal}`,
+      action: (ctx: Context, [, task]: [string, string]) => {
+        ctx.ns.gang.setMemberTask(gangMember, task)
+        return true
+      },
+    }),
+
+    // TODO the rest of this.
+
+    new Step({
+      name: "FallbackTask",
+      gather: () => undefined,
+      predicate: () => true,
+      log: () => `Tasking ${gangMember} to Train Combat as a fallback`,
+      action: (ctx: Context) => {
+        ctx.ns.gang.setMemberTask(gangMember, "Train Combat")
+        return true
+      },
+    }),
+  ]
+}
+
+export function GangSteps() {
+  return [
     new Step({
       name: "CreateGang",
       gather: (ctx: Context) => {
         // Check if we're in a crime gang faction. If not don't bother with the rest.
         const player = ctx.ns.getPlayer()
-        return CRIME_GANG_FACTIONS.find((faction) => player.factions.includes(faction))
+        return CRIME_GANG_FACTIONS.find((faction) => player.factions.includes(faction)) || ""
       },
-      predicate: (ctx: Context, gangFaction: string | undefined) => {
-        return gangFaction !== undefined
+      predicate: (ctx: Context, gangFaction: string) => {
+        return gangFaction !== "" && !ctx.ns.gang.inGang()
       },
-      action: (ctx: Context, gangFaction: string | undefined) => {
-        if (gangFaction === undefined) {
-          throw `Invalid faction to join`
+      log: (ctx: Context, gangFaction: string) => {
+        ctx.log.info(`Creating a gang with ${gangFaction}`)
+      },
+      action: (ctx: Context, gangFaction: string) => {
+        return !ctx.ns.gang.createGang(gangFaction)
+      },
+    }),
+
+    new Step({
+      name: "CheckInGang",
+      final: true,
+      gather: () => undefined,
+      predicate: (ctx: Context) => ctx.ns.gang.inGang(),
+      action: () => undefined,
+    }),
+
+    new Step({
+      name: "RecruitGangMember",
+      gather: (ctx: Context) => {
+        // Find an unused name.
+        const usedNames = ctx.ns.gang.getMemberNames()
+        const unusedNames = GANG_MEMBER_NAMES.filter((n) => !usedNames.includes(n))
+        if (unusedNames.length === 0) {
+          // Just in case, but this should be impossible.
+          unusedNames.push((usedNames.length + 1).toString())
         }
-        if (!ctx.ns.gang.inGang()) {
-          return !ctx.ns.gang.createGang(gangFaction)
-        } else {
-          // No-op when already in a gang.
-          ctx.log.debug("Already in a gang")
-          return false
-        }
+        // Pick one at random.
+        return unusedNames[(unusedNames.length * Math.random()) | 0]
+      },
+      predicate: (ctx: Context) => ctx.ns.gang.canRecruitMember(),
+      log: (ctx: Context, name: string) => {
+        ctx.log.info(`Recruiting gang member ${name}`)
+      },
+      action: (ctx: Context, name: string) => {
+        ctx.ns.gang.recruitMember(name)
+        // Later this can be handled by a chain of its own but having it here too
+        // is good for safety so new members aren't left on Unassigned if something blows up.
+        ctx.ns.gang.setMemberTask(name, "Train Combat")
       },
     }),
 
@@ -150,10 +318,22 @@ export function GangChain() {
             })
         ),
     }),
-  ])
+
+    new RunChainStep({
+      name: "TaskGangMembers",
+      chain: (ctx: Context) =>
+        ctx.ns.gang.getMemberNames().map(
+          (member) =>
+            new RunChainStep({
+              name: `TaskGangMembers-${member}`,
+              chain: TaskGangMemberSteps(member),
+            })
+        ),
+    }),
+  ]
 }
 
 export async function main(ns: NS) {
   // Stub entrypoint to run only the gang chain.
-  await ExecuteChain(ns, GangChain())
+  await Execute(ns, GangSteps())
 }
