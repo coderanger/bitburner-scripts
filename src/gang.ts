@@ -143,13 +143,10 @@ function UpgradeGangMemberSteps(gangMember: string) {
 //   }
 // }
 
-const TASKS_TO_CONSIDER = ["Mug People", "Human Trafficking", "Terrorism"]
-
 function getBestTasks(ctx: Context, gangMember: string) {
   const gangInfo = ctx.ns.gang.getGangInformation()
   const memberInfo = ctx.ns.gang.getMemberInformation(gangMember)
-  // const tasks = ctx.ns.gang.getTaskNames().map((taskName) => {
-  const tasks = TASKS_TO_CONSIDER.map((taskName) => {
+  const tasks = ctx.ns.gang.getTaskNames().map((taskName) => {
     const taskStats = ctx.ns.gang.getTaskStats(taskName)
     return {
       taskName,
@@ -218,16 +215,16 @@ function TaskGangMemberSteps(gangMember: string) {
       name: "ManualTask",
       gather: (ctx: Context): [string, string] => {
         const fileData = (ctx.ns.read("gangManual.txt") as string).trim()
-        if (fileData === "respect" || fileData === "money") {
-          const tasks = cachedBestTasks(ctx)
-          switch (fileData) {
-            case "respect":
-              return ["respect", tasks.respectTask]
-            case "money":
-              return ["money", tasks.moneyTask]
-          }
-        } else {
-          return ["", ""]
+        const tasks = cachedBestTasks(ctx)
+        switch (fileData) {
+          case "respect":
+            return ["respect", tasks.respectTask]
+          case "money":
+            return ["money", tasks.moneyTask]
+          case "train":
+            return ["train", "Train Combat"]
+          default:
+            return ["", ""]
         }
       },
       predicate: (ctx: Context, [goal]: [string, string]) => goal !== "",
