@@ -7,8 +7,10 @@ export class Context {
   log: Logger
   dryRun = false
   data: Record<string, unknown> = {}
+  once = false
   onceData: Record<string, unknown> = {}
   perfTimers: number[] = []
+  chainPath: string[] = []
 
   constructor(ns: NS) {
     this.ns = ns
@@ -35,10 +37,10 @@ export class Context {
   }
 }
 
-type Gather<DataType> = (ctx: Context) => DataType
-type Predicate<DataType> = (ctx: Context, data: DataType) => boolean
-type Log<DataType> = (ctx: Context, data: DataType) => void | string
-type Action<DataType> = (ctx: Context, data: DataType) => void | boolean
+type Gather<DataType> = (ctx: Context) => DataType | Promise<DataType>
+type Predicate<DataType> = (ctx: Context, data: DataType) => boolean | Promise<boolean>
+type Log<DataType> = (ctx: Context, data: DataType) => void | string | Promise<void | string>
+type Action<DataType> = (ctx: Context, data: DataType) => void | boolean | Promise<void | boolean>
 
 export class Step<DataType> {
   name: string
@@ -59,7 +61,7 @@ export class Step<DataType> {
   }) {
     this.name = options.name
     this.gather = options.gather
-    this.predicate = options.predicate || (() => true)
+    this.predicate = options.predicate || (async () => true)
     this.log = options.log
     this.action = options.action
     this.final = !!options.final
@@ -69,22 +71,22 @@ export class Step<DataType> {
     return true
   }
 
-  run(ctx: Context) {
+  async run(ctx: Context) {
     ctx.log.debug(`Starting step ${this.name}`)
 
     // ctx.perfStart()
-    const data = this.gather(ctx)
+    const data = await this.gather(ctx)
     // ctx.perfEnd(`Step ${this.name} gather`)
     ctx.log.trace(`Got action data ${JSON.stringify(data)}`)
 
     // ctx.perfStart()
-    const pred = this.predicate(ctx, data)
+    const pred = await this.predicate(ctx, data)
     // ctx.perfEnd(`Step ${this.name} predicate`)
 
     if (pred) {
       ctx.log.debug(`Running action for ${this.name}`)
       if (this.log) {
-        const log = this.log(ctx, data)
+        const log = await this.log(ctx, data)
         if (typeof log === "string") {
           ctx.log.info(log)
         }
@@ -94,12 +96,78 @@ export class Step<DataType> {
         return false
       }
       // ctx.perfStart()
-      const rv = this.action(ctx, data)
+      const rv = await this.action(ctx, data)
       // ctx.perfEnd(`Step ${this.name} action`)
       return rv === undefined ? false : rv
     } else {
       return this.final
     }
+  }
+}
+
+export class StatefulStep<DataType> extends Step<DataType> {
+  constructor(options: {
+    name: string
+    gather: Gather<DataType>
+    enter: Predicate<DataType>
+    exit: Predicate<DataType>
+    log?: Log<DataType>
+    action: Action<DataType>
+    final?: boolean
+  }) {
+    super({
+      name: options.name,
+      gather: options.gather,
+      predicate: (ctx: Context, data: DataType) => {
+        const contextKey = `state-${ctx.chainPath.join("-")}-${this.name}`
+        if (ctx.data[contextKey]) {
+          // In the state, check if we need to exit.
+          if (options.exit(ctx, data)) {
+            // Exiting, clear flag and return false.
+            delete ctx.data[contextKey]
+            return false
+          } else {
+            // Staying in the state.
+            return true
+          }
+        } else {
+          // Not in the state, check if we need to enter.
+          if (options.enter(ctx, data)) {
+            // Entering, set the flag and return true.
+            ctx.data[contextKey] = true
+            return true
+          } else {
+            return false
+          }
+        }
+      },
+      log: options.log,
+      action: options.action,
+      final: options.final,
+    })
+  }
+}
+
+// A special step that runs in a loop until the predicate returns false.
+export class RepeatingStep<DataType> extends Step<DataType> {
+  constructor(options: {
+    name: string
+    gather: Gather<DataType>
+    predicate?: Predicate<DataType>
+    log?: Log<DataType>
+    action: Action<DataType>
+    final?: boolean
+  }) {
+    options.final = true
+    super(options)
+  }
+
+  async run(ctx: Context) {
+    while (!(await super.run(ctx)) && !ctx.dryRun) {
+      // Just keep looping.
+      await ctx.ns.sleep(1)
+    }
+    return false
   }
 }
 
@@ -119,7 +187,7 @@ export class RunChainStep extends Step<null> {
       gather: () => null,
       predicate: options.predicate,
       final: options.final,
-      action: (ctx: Context) => {
+      action: async (ctx: Context) => {
         let chain = options.chain
         if (typeof chain === "function") {
           chain = chain(ctx)
@@ -127,7 +195,7 @@ export class RunChainStep extends Step<null> {
         if (!(chain instanceof Chain)) {
           chain = new Chain(options.name, chain)
         }
-        chain.run(ctx)
+        await chain.run(ctx)
         return this.finalChain
       },
     })
@@ -150,12 +218,13 @@ export class Chain {
     this.steps = steps
   }
 
-  run(ctx: Context) {
+  async run(ctx: Context) {
     ctx.log.debug(`Running chain ${this.name}`)
+    ctx.chainPath.push(this.name)
     for (const step of this.steps) {
       try {
         ctx.perfStart()
-        const ret = step.run(ctx)
+        const ret = await step.run(ctx)
         ctx.perfEnd(`Step ${step.name}`)
 
         if (ret) {
@@ -171,12 +240,14 @@ export class Chain {
         }
       }
     }
+    const pathPop = ctx.chainPath.pop()
+    if (pathPop !== this.name) {
+      throw `Inconsistent chain path, popped ${pathPop} but chain is ${this.name}: ${ctx.chainPath}`
+    }
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function Execute(ns: NS, steps: Step<any>[]) {
-  ns.disableLog("ALL")
+export function CreateContext(ns: NS) {
   // Parse standard flags.
   const options = ns.flags([
     ["log-level", "info"],
@@ -190,21 +261,33 @@ export async function Execute(ns: NS, steps: Step<any>[]) {
   ctx.log.setTprint((options["tprint"] as boolean) || (options["once"] as boolean))
   ctx.log.setBuffered(true)
   ctx.dryRun = options["dry-run"] as boolean
+  ctx.once = options.once as boolean
 
+  return ctx
+}
+
+export async function ExecuteSingle(ctx: Context, chain: Chain) {
+  ctx.onceData = {}
+  ctx.perfStart("debug")
+  await chain.run(ctx)
+  ctx.perfEnd("Execution", "debug")
+  if (ctx.perfTimers.length !== 0) {
+    throw "Unmatched perfStart/End"
+  }
+  ctx.log.flushBuffer()
+  if (!ctx.dryRun) {
+    await ctx.ns.write(`${chain.name}-data.json.txt`, JSON.stringify(ctx.data, undefined, 2), "w")
+  }
+  return !ctx.once
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function Execute(ns: NS, steps: Step<any>[]) {
+  ns.disableLog("ALL")
+  const ctx = CreateContext(ns)
   const chain = new Chain("Root", steps)
 
-  while (true) {
-    ctx.onceData = {}
-    ctx.perfStart("info")
-    chain.run(ctx)
-    ctx.perfEnd("Execution", "info")
-    if (ctx.perfTimers.length !== 0) {
-      throw "Unmatched perfStart/End"
-    }
-    ctx.log.flushBuffer()
-    if (options.once) {
-      break
-    }
+  while (await ExecuteSingle(ctx, chain)) {
     await ns.sleep(5000)
   }
 }

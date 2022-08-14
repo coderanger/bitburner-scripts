@@ -1,4 +1,4 @@
-import { Context, Execute, RunChainStep, Step } from "./descisionTree"
+import { Context, Execute, RunChainStep, StatefulStep, Step } from "./descisionTree"
 import type { NS } from "@ns"
 
 const CRIME_GANG_FACTIONS = ["Slum Snakes", "Tetrads", "The Syndicate"]
@@ -50,7 +50,10 @@ function UpgradeGangMemberSteps(gangMember: string) {
         for (const statName in stats) {
           const stat = stats[statName]
           let ready
-          if (stat.current < 30) {
+          if (stat.current >= 4 && ctx.ns.gang.getMemberNames().length < 12) {
+            // Ascending will keep resetting respect which prevents getting all our members.
+            ready = false
+          } else if (stat.current < 30) {
             const threshold = stat.current < 10 ? 2 : 5
             ready = stat.current - (stat.current % threshold) + threshold <= stat.next
           } else {
@@ -61,7 +64,8 @@ function UpgradeGangMemberSteps(gangMember: string) {
         }
         ctx.log.trace(`Ascension ready stats ${JSON.stringify(readyStats)}`)
         return (
-          readyStats.hack || readyStats.chr || (readyStats.str && readyStats.def && readyStats.dex)
+          // readyStats.hack || readyStats.chr || (readyStats.str && readyStats.def && readyStats.dex)
+          readyStats.str && readyStats.def && readyStats.dex
         )
       },
       log: (ctx: Context, stats: AscensionStats | undefined) => {
@@ -111,8 +115,10 @@ function UpgradeGangMemberSteps(gangMember: string) {
             continue
           }
           const cost = ctx.ns.gang.getEquipmentCost(equip)
+          const type = ctx.ns.gang.getEquipmentType(equip)
+          const maxPrice = type === "Augmentation" ? 0.5 : 0.02
           // Buy anything costs less than 1% of total money.
-          if (cost <= money * 0.01) {
+          if (cost <= money * maxPrice) {
             toPurchase.push(equip)
             money -= cost
           }
@@ -146,18 +152,28 @@ function UpgradeGangMemberSteps(gangMember: string) {
 function getBestTasks(ctx: Context, gangMember: string) {
   const gangInfo = ctx.ns.gang.getGangInformation()
   const memberInfo = ctx.ns.gang.getMemberInformation(gangMember)
-  const tasks = ctx.ns.gang.getTaskNames().map((taskName) => {
-    const taskStats = ctx.ns.gang.getTaskStats(taskName)
-    return {
-      taskName,
-      respect: ctx.ns.formulas.gang.respectGain(gangInfo, memberInfo, taskStats),
-      money: ctx.ns.formulas.gang.moneyGain(gangInfo, memberInfo, taskStats),
-    }
-  })
+  const tasks = ctx.ns.gang
+    .getTaskNames()
+    .filter((n) => n !== "Unassigned")
+    .map((taskName) => {
+      const taskStats = ctx.ns.gang.getTaskStats(taskName)
+      return {
+        taskName,
+        respect: ctx.ns.formulas.gang.respectGain(gangInfo, memberInfo, taskStats),
+        money: ctx.ns.formulas.gang.moneyGain(gangInfo, memberInfo, taskStats),
+      }
+    })
   const bestRespect = tasks.reduce((prev, current) =>
     current.respect > prev.respect ? current : prev
   )
   const bestMoney = tasks.reduce((prev, current) => (current.money > prev.money ? current : prev))
+  ctx.log.debug(
+    `Got best tasks for ${gangMember}: Respect=${
+      bestRespect.taskName
+    } @ ${bestRespect.respect.toLocaleString(undefined, { maximumFractionDigits: 1 })} Money=${
+      bestMoney.taskName
+    } @ ${bestMoney.money.toLocaleString(undefined, { maximumFractionDigits: 1 })}`
+  )
   return {
     respect: bestRespect.respect,
     respectTask: bestRespect.taskName,
@@ -178,7 +194,9 @@ function TaskGangMemberSteps(gangMember: string) {
         ctx.onceData[cachedBestTasksKey] = getBestTasks(ctx, gangMember)
       },
       predicate: (ctx: Context) =>
-        ctx.ns.gang.getMemberNames().length < 12 && cachedBestTasks(ctx).respect <= 10,
+        ctx.ns.gang.getMemberNames().length < 12 &&
+        cachedBestTasks(ctx).respect <= 10 &&
+        ctx.ns.gang.getMemberInformation(gangMember).str <= 200,
       log: () => `Tasking ${gangMember} to train for bootstrapping`,
       action: (ctx: Context) => {
         ctx.ns.gang.setMemberTask(gangMember, "Train Combat")
@@ -200,10 +218,11 @@ function TaskGangMemberSteps(gangMember: string) {
       },
     }),
 
-    new Step({
+    new StatefulStep({
       name: "ReduceWantedTask",
       gather: () => undefined,
-      predicate: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel >= 100,
+      enter: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel >= 1000,
+      exit: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel <= 2,
       log: () => `Tasking ${gangMember} to Vigilante Justice to reduce wanted level`,
       action: (ctx: Context) => {
         ctx.ns.gang.setMemberTask(gangMember, "Vigilante Justice")
@@ -223,6 +242,8 @@ function TaskGangMemberSteps(gangMember: string) {
             return ["money", tasks.moneyTask]
           case "train":
             return ["train", "Train Combat"]
+          case "territory":
+            return ["territory", "Territory Warfare"]
           default:
             return ["", ""]
         }
@@ -240,11 +261,18 @@ function TaskGangMemberSteps(gangMember: string) {
 
     new Step({
       name: "FallbackTask",
-      gather: () => undefined,
+      gather: (ctx: Context) => {
+        const minutes = new Date().getMinutes() + ctx.ns.gang.getMemberNames().indexOf(gangMember)
+        if (minutes % 10 === 0) {
+          return "Territory Warfare"
+        }
+        const tasks = cachedBestTasks(ctx)
+        return ["Train Combat", tasks.respectTask, tasks.moneyTask][minutes % 3]
+      },
       predicate: () => true,
-      log: () => `Tasking ${gangMember} to Train Combat as a fallback`,
-      action: (ctx: Context) => {
-        ctx.ns.gang.setMemberTask(gangMember, "Train Combat")
+      log: (ctx: Context, taskName: string) => `Tasking ${gangMember} to ${taskName} as a fallback`,
+      action: (ctx: Context, taskName: string) => {
+        ctx.ns.gang.setMemberTask(gangMember, taskName)
         return true
       },
     }),
@@ -326,6 +354,29 @@ export function GangSteps() {
               chain: TaskGangMemberSteps(member),
             })
         ),
+    }),
+
+    new Step({
+      name: "EnableTerritoryWarfare",
+      gather: () => undefined,
+      predicate: (ctx: Context) => {
+        const gang = ctx.ns.gang.getGangInformation()
+        if (gang.territoryWarfareEngaged) {
+          // Already on.
+          return false
+        }
+        const allGangs = ctx.ns.gang.getOtherGangInformation()
+        const winChances: number[] = []
+        for (const faction in allGangs) {
+          if (faction === gang.faction || allGangs[faction].territory === 0) {
+            continue
+          }
+          winChances.push(gang.power / (allGangs[faction].power + gang.power))
+        }
+        return Math.min(...winChances) >= 0.8
+      },
+      log: () => "Enabling territory warfare",
+      action: (ctx: Context) => ctx.ns.gang.setTerritoryWarfare(true),
     }),
   ]
 }

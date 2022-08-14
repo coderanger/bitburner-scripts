@@ -61,6 +61,8 @@ class Server {
   maxRam!: number
   moneyMax!: number
   requiredHackingSkill!: number
+  backdoorInstalled!: boolean
+  purchasedByPlayer!: boolean
 
   constructor(ns: NS, hostname: string, path: string[]) {
     this.ns = ns
@@ -83,7 +85,10 @@ class Server {
     return this.ns.getServerMoneyAvailable(this.hostname)
   }
 
-  root(player: Player) {
+  async root(player: Player) {
+    if (this.purchasedByPlayer || this.hostname === "home") {
+      return true
+    }
     if (!this.hasAdminRights && player.portsOpenable >= this.numOpenPortsRequired) {
       // Try to nuke the server.
       tryAttack(this.ns.brutessh, this.hostname)
@@ -92,6 +97,21 @@ class Server {
       tryAttack(this.ns.httpworm, this.hostname)
       tryAttack(this.ns.sqlinject, this.hostname)
       this.ns.nuke(this.hostname)
+      this.refresh()
+    }
+    if (
+      this.hasAdminRights &&
+      !this.backdoorInstalled &&
+      player.skills.hacking >= this.requiredHackingSkill
+    ) {
+      // Always go home first.
+      this.ns.tprint(`Installing a backdoor on ${this.hostname}`)
+      this.ns.singularity.connect("home")
+      for (const server of this.path) {
+        this.ns.singularity.connect(server)
+      }
+      await this.ns.singularity.installBackdoor()
+      this.ns.singularity.connect("home")
       this.refresh()
     }
     return this.hasAdminRights
@@ -281,6 +301,14 @@ export async function main(ns: NS) {
             ns.tprint(`${args[0]}: ${settings[args[0]]}`)
           }
           break
+        case "contracts":
+          for (const s in servers) {
+            const contracts = ns.ls(s).filter((f) => f.endsWith(".cct"))
+            if (contracts.length !== 0) {
+              ns.tprint(`${s}: ${contracts.join(", ")}`)
+            }
+          }
+          break
         default:
           await ns.alert(`Unknown command ${cmd}`)
           break
@@ -291,19 +319,25 @@ export async function main(ns: NS) {
     const workers = ["home"].concat(ns.getPurchasedServers())
 
     // If we're using the network for workers, find what we have available.
-    if (useNetworkWorkers) {
-      for (const s in servers) {
-        const server = servers[s]
-        if (!workers.includes(s) && server.maxRam >= 4 && server.root(player)) {
-          workers.push(server.hostname)
-        }
+    for (const s in servers) {
+      const server = servers[s]
+      const hasRoot = await server.root(player)
+      if (
+        useNetworkWorkers &&
+        s !== "home" &&
+        !workers.includes(s) &&
+        server.maxRam >= 4 &&
+        !s.startsWith("hacknet-node-") &&
+        hasRoot
+      ) {
+        workers.push(server.hostname)
       }
     }
     status.workers = workers
 
     // Check for any idle workers.
     const runningStuff = workers.map((server) => {
-      const ps = ns.ps(server).filter((proc) => proc.filename !== ns.getScriptName())
+      const ps = ns.ps(server).filter((proc) => proc.filename.startsWith("/steps/"))
       if (ps.length === 0) {
         return {
           worker: server,
@@ -333,7 +367,7 @@ export async function main(ns: NS) {
       if (
         server.moneyMax > 0 &&
         server.requiredHackingSkill <= player.skills.hacking &&
-        server.root(player)
+        (await server.root(player))
       ) {
         targets.push(server.hostname)
       }
@@ -403,15 +437,17 @@ export async function main(ns: NS) {
         // args = [Math.max(Math.floor(30000 / ns.getHackTime(server)), 1)]
 
         // Reddit says Weaken is better for XP.
-        target = { server: "joesguns" }
+        target = {
+          server: (await servers.joesguns.root(player)) ? "joesguns" : "home",
+        }
         action = "xp"
         args = [Math.max(Math.floor(30000 / ns.getWeakenTime(target.server)), 1)]
       }
       const actionScript = `/steps/${action}.js`
       // Work out how many threads to spawn with.
       const [totalRam, usedRam] = ns.getServerRam(server)
-      const memoryReserved = server === "home" && totalRam > 64 ? 32 : totalRam >= 16 ? 3 : 0
-      const effectiveRam = totalRam - usedRam - memoryReserved
+      const memoryReserved = server === "home" ? 128 - usedRam : 0
+      const effectiveRam = Math.max(totalRam - usedRam - memoryReserved, 0)
       const scriptRam = ns.getScriptRam(actionScript, server)
       const threads = Math.max(Math.floor(effectiveRam / scriptRam), 1)
       if (action !== "selfhack" && action !== "xp") {
