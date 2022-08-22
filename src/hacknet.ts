@@ -1,4 +1,5 @@
-import { Context, Execute, RepeatingStep, Step } from "./descisionTree"
+import { Context, Execute, RepeatingStep, Step } from "./decisionTree"
+import type { Server } from "./utils"
 import type { NS, Player } from "@ns"
 
 type UpgradeType = "level" | "ram" | "core" | "newNode"
@@ -160,29 +161,104 @@ function bestUpgrade(ns: NS) {
   return best[0]
 }
 
+interface SpendHashesOn {
+  action: string
+  target: Server | undefined
+  count: number
+  cost: number
+}
+
 export function HacknetSteps() {
   return [
     new Step({
-      name: "SellHashes",
+      name: "SpendHashes",
       gather: (ctx: Context) => {
+        let action: string | undefined, target: Server | undefined
+        const minSecCost = ctx.ns.hacknet.hashCost("Reduce Minimum Security")
+        const maxMoneyCost = ctx.ns.hacknet.hashCost("Increase Maximum Money")
+        if (minSecCost < maxMoneyCost) {
+          // Look for a target with the most max money and not at minSec 1.
+          target = Object.values(ctx.servers)
+            .filter((s) => s.info.minDifficulty > 1)
+            .reduce((prev, cur) => (prev.info.moneyMax >= cur.info.moneyMax ? prev : cur))
+          action = "Reduce Minimum Security"
+        } else {
+          // Look for the server with the most max money under 10T (it's a soft cap but still).
+          target = Object.values(ctx.servers)
+            .filter((s) => s.info.moneyMax < 10_000_000_000_000)
+            .reduce((prev, cur) => (prev.info.moneyMax >= cur.info.moneyMax ? prev : cur))
+          action = "Increase Maximum Money"
+        }
+
+        // Check if we have a target that isn't hackable yet. This means it will generate money for a short while at startup.
+        if (
+          ctx.player.skills.hacking < target.info.requiredHackingSkill &&
+          ctx.player.skills.hacking < 800
+        ) {
+          target = undefined
+          action = "Sell for Money"
+        }
+
         const current = ctx.ns.hacknet.numHashes()
         const max = ctx.ns.hacknet.hashCapacity()
-        const cost = ctx.ns.hacknet.hashCost("Sell for Money")
+        // const cost = ctx.ns.hacknet.hashCost(action)
         // Check if we're still early in the run, if so just sell them off as we can. Otherwise
         // keep 50% of capacity so we can use them for other things.
-        const player = ctx.ns.getPlayer()
-        const toKeep = player.skills.hacking <= 2000 ? 0 : 0.5
-        return Math.max(Math.floor((current - max * toKeep) / cost), 0)
-      },
-      predicate: (ctx: Context, toSell: number) => toSell > 0,
-      log: (ctx: Context, toSell: number) =>
-        `Selling ${toSell * ctx.ns.hacknet.hashCost("Sell for Money")} hashes for $${toSell}M`,
-      action: (ctx: Context, toSell: number) => {
-        for (let i = 0; i < toSell; i++) {
-          const ret = ctx.ns.hacknet.spendHashes("Sell for Money")
-          if (!ret) {
-            throw `Error selling hashes for money`
+        // const player = ctx.ns.getPlayer()
+        const toKeepPct = max <= 10_000 || current >= max * 0.9 ? 0 : 0.5
+        const toKeep = Math.min(Math.ceil(max * toKeepPct), 50_000)
+        const effectiveCurrent = current - toKeep
+
+        // Work out how many count we can afford.
+        // Broken binary search thing.
+        // let cost = 0
+        // let count = 1000
+        // let stride = count
+        // while (stride >= 0.5) {
+        //   count = Math.floor(count)
+        //   stride /= 2
+        //   cost = ctx.ns.hacknet.hashCost(action, count)
+        //   if (cost === effectiveCurrent) {
+        //     // We're done.
+        //     stride = 0
+        //   } else if (cost > effectiveCurrent) {
+        //     count -= stride
+        //   } else {
+        //     count += stride
+        //   }
+        // }
+        // count = Math.max(Math.floor(count), 0)
+
+        // Simpler count algorithm that takes advantage of Sell for Money being linear.
+        let count = 0
+        let cost = 0
+        if (action === "Sell for Money") {
+          const costPer = ctx.ns.hacknet.hashCost(action)
+          count = Math.floor(effectiveCurrent / costPer)
+          cost = count * costPer
+        } else {
+          count = 1
+          cost = ctx.ns.hacknet.hashCost(action)
+          if (cost > effectiveCurrent) {
+            count = 0
+            cost = 0
           }
+        }
+
+        return {
+          action,
+          target,
+          count,
+          cost,
+        } as SpendHashesOn
+      },
+      predicate: (ctx: Context, data: SpendHashesOn) => data.count > 0,
+      log: (ctx: Context, data: SpendHashesOn) =>
+        `Running ${data.action} (${data.target?.hostname}) ${data.count} times, ${data.cost} total hashes`,
+      action: (ctx: Context, data: SpendHashesOn) => {
+        const ret = ctx.ns.hacknet.spendHashes(data.action, data.target?.hostname, data.count)
+        if (!ret) {
+          throw `Error spending hashes on ${data.action} (${data.target?.hostname}) ${data.count} times for ${data.cost}`
         }
       },
     }),
@@ -246,5 +322,5 @@ export function HacknetSteps() {
 
 export async function main(ns: NS) {
   // Stub entrypoint to run only the hacknet chain.
-  await Execute(ns, HacknetSteps())
+  await Execute(ns, "Hacknet", HacknetSteps())
 }

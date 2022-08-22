@@ -1,6 +1,7 @@
 import { LOG_LEVELS, Logger } from "./log"
 import type { LogLevelType } from "./log"
-import type { NS } from "@ns"
+import { Server, scanNetwork } from "/utils"
+import type { NS, Player } from "@ns"
 
 export class Context {
   ns: NS
@@ -11,10 +12,19 @@ export class Context {
   onceData: Record<string, unknown> = {}
   perfTimers: number[] = []
   chainPath: string[] = []
+  servers: Record<string, Server> = {}
+  player!: Player
 
   constructor(ns: NS) {
     this.ns = ns
     this.log = new Logger(ns)
+    this.reset()
+  }
+
+  reset() {
+    this.onceData = {}
+    this.servers = scanNetwork(this.ns)
+    this.player = this.ns.getPlayer()
   }
 
   perfStart(level: keyof typeof LOG_LEVELS = "trace") {
@@ -171,6 +181,52 @@ export class RepeatingStep<DataType> extends Step<DataType> {
   }
 }
 
+// A step where the gather returns an array, the predicate is "is empty?", and log+action can run for each item.
+export class EachStep<DataType> extends Step<DataType[]> {
+  constructor(options: {
+    name: string
+    gather: Gather<DataType[]>
+    log?: Log<DataType>
+    action: Action<DataType>
+    final?: boolean
+  }) {
+    const logFn = options.log
+    super({
+      name: options.name,
+      final: options.final,
+      gather: options.gather,
+      predicate: (ctx: Context, data: DataType[]) => data.length !== 0,
+      log: async (ctx: Context, data: DataType[]) => {
+        if (!ctx.dryRun || logFn === undefined) {
+          // In dry-run mode, log here but otherwise we'll log down in action so it shows in order
+          return
+        }
+        for (const d of data) {
+          const log = await logFn(ctx, d)
+          if (log !== undefined) {
+            ctx.log.info(log)
+          }
+        }
+      },
+      action: async (ctx: Context, data: DataType[]) => {
+        for (const d of data) {
+          if (logFn) {
+            const log = await logFn(ctx, d)
+            if (typeof log === "string") {
+              ctx.log.info(log)
+            }
+          }
+          const rv = await options.action(ctx, d)
+          if (rv === true) {
+            return true
+          }
+        }
+        return false
+      },
+    })
+  }
+}
+
 export class RunChainStep extends Step<null> {
   finalChain: boolean
 
@@ -220,6 +276,7 @@ export class Chain {
 
   async run(ctx: Context) {
     ctx.log.debug(`Running chain ${this.name}`)
+    let aborted = false
     ctx.chainPath.push(this.name)
     for (const step of this.steps) {
       try {
@@ -229,6 +286,7 @@ export class Chain {
 
         if (ret) {
           ctx.log.debug(`Aborting chain`)
+          aborted = true
           break
         }
       } catch (err) {
@@ -244,6 +302,7 @@ export class Chain {
     if (pathPop !== this.name) {
       throw `Inconsistent chain path, popped ${pathPop} but chain is ${this.name}: ${ctx.chainPath}`
     }
+    return aborted
   }
 }
 
@@ -267,7 +326,7 @@ export function CreateContext(ns: NS) {
 }
 
 export async function ExecuteSingle(ctx: Context, chain: Chain) {
-  ctx.onceData = {}
+  ctx.reset()
   ctx.perfStart("debug")
   await chain.run(ctx)
   ctx.perfEnd("Execution", "debug")
@@ -282,11 +341,12 @@ export async function ExecuteSingle(ctx: Context, chain: Chain) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function Execute(ns: NS, steps: Step<any>[]) {
+export async function Execute(ns: NS, name: string, steps: Step<any>[]) {
   ns.disableLog("ALL")
   const ctx = CreateContext(ns)
-  const chain = new Chain("Root", steps)
+  const chain = new Chain(name, steps)
 
+  ns.print(`Starting ${name} AI daemon`)
   while (await ExecuteSingle(ctx, chain)) {
     await ns.sleep(5000)
   }

@@ -65,8 +65,9 @@ export async function main(ns: NS) {
   }
 
   const existingServerCount = ns.getPurchasedServers().length
-  if (existingServerCount + count > 25) {
-    count = 25 - existingServerCount
+  const maxServerCount = ns.getPurchasedServerLimit()
+  if (existingServerCount + count > maxServerCount) {
+    count = maxServerCount - existingServerCount
   }
   if (count === 0) {
     // TODO: This should ask to sell things.

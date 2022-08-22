@@ -1,4 +1,4 @@
-import { Context, Execute, RunChainStep, StatefulStep, Step } from "./descisionTree"
+import { Context, Execute, RunChainStep, StatefulStep, Step } from "./decisionTree"
 import type { NS } from "@ns"
 
 const CRIME_GANG_FACTIONS = ["Slum Snakes", "Tetrads", "The Syndicate"]
@@ -257,6 +257,17 @@ function TaskGangMemberSteps(gangMember: string) {
       },
     }),
 
+    // TODO Check the expected time of everyone running Territory Warfare until we have enough to enable
+    // and do that if less than X minutes (10, 20, 30?)
+    // Game runs TW power math every 20 seconds (200 ms/cycle, 100 cycles/update, == 20 s/update)
+    // Per-member math https://github.com/danielyxie/bitburner/blob/738152d614a923e7a66a108b4c5d7c148d904851/src/Gang/GangMember.ts#L79
+    // return (this.hack + this.str + this.def + this.dex + this.agi + this.cha) / 95;
+    // Gang math https://github.com/danielyxie/bitburner/blob/5d2b81053d762111adb094849bf2d09f596b2157/src/Gang/Gang.ts#L331
+    // return 0.015 * Math.max(0.002, this.getTerritory()) * memberTotal;
+    // Only counts members in the TW task
+    // So compute how much more power we need right now, compute how long that would take, add on X% because other gangs
+    // are also gaining power at the same time.
+
     // TODO the rest of this.
 
     new Step({
@@ -383,5 +394,5 @@ export function GangSteps() {
 
 export async function main(ns: NS) {
   // Stub entrypoint to run only the gang chain.
-  await Execute(ns, GangSteps())
+  await Execute(ns, "Gang", GangSteps())
 }

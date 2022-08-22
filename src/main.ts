@@ -1,6 +1,14 @@
 import { moneyStr, ramStr } from "./utils"
 import type { NS, Server as NSServer } from "@ns"
 
+const SHOULD_BACKDOOR: Record<string, boolean> = {
+  CSEC: true,
+  "avmnite-02h": true,
+  "I.I.I.I": true,
+  run4theh111z: true,
+  "The-Cave": true,
+}
+
 function serverHasBackdoor(ns: NS, server: string) {
   if (server === undefined) {
     return (s: string) => serverHasBackdoor(ns, s)
@@ -100,6 +108,7 @@ class Server {
       this.refresh()
     }
     if (
+      SHOULD_BACKDOOR[this.hostname] &&
       this.hasAdminRights &&
       !this.backdoorInstalled &&
       player.skills.hacking >= this.requiredHackingSkill
@@ -157,7 +166,7 @@ export async function main(ns: NS) {
   // const extraWorkers = initialData.extraWorkers || []
   const growsInARow = initialData.growsInARow || {}
   const useNetworkWorkers = ns.getServerMaxRam("home") <= 512
-  const settings = { quiet: false, xp: false, ...initialData.settings }
+  const settings = { quiet: false, xp: false, useHacknet: false, ...initialData.settings }
 
   const writeData = async () => {
     const data = {
@@ -180,10 +189,18 @@ export async function main(ns: NS) {
     workers: string[]
     targets: string[]
     idleTargets: string[]
+    targetInfo: {
+      server: string
+      securityLevel: number
+      minSecurityLevel: number
+      moneyAvailable: number
+      maxMoney: number
+    }[]
   } = {
     workers: [],
     targets: [],
     idleTargets: [],
+    targetInfo: [],
   }
 
   // Get started.
@@ -309,6 +326,16 @@ export async function main(ns: NS) {
             }
           }
           break
+        case "targets":
+          ns.tprint("Target Info")
+          for (const target of status.targetInfo) {
+            ns.tprint(
+              `${target.server}: Sec ${Math.floor(target.securityLevel || 0)}/${
+                target.minSecurityLevel
+              } $${moneyStr(target.moneyAvailable || 0)}/${moneyStr(target.maxMoney || 0)}`
+            )
+          }
+          break
         default:
           await ns.alert(`Unknown command ${cmd}`)
           break
@@ -333,6 +360,16 @@ export async function main(ns: NS) {
         workers.push(server.hostname)
       }
     }
+
+    // If we're using Hacknet servers, add those.
+    if (settings.useHacknet) {
+      for (const s in servers) {
+        if (s.startsWith("hacknet-node-")) {
+          workers.push(s)
+        }
+      }
+    }
+
     status.workers = workers
 
     // Check for any idle workers.
@@ -395,11 +432,12 @@ export async function main(ns: NS) {
       })
       .map((t) => {
         t.growable = t.moneyAvailable < t.maxMoney * 0.9 && (growsInARow[t.server] || 0) <= 5
-        t.weakenable = t.securityLevel > t.minSecurityLevel
+        t.weakenable = t.securityLevel > t.minSecurityLevel * 1.1
         t.hackable = !(t.growable || t.weakenable)
         return t
       })
       .sort((a, b) => b.maxMoney - a.maxMoney)
+    status.targetInfo = targetInfo
 
     // Find something for each worker to do.
     for (const server of idleWorkers) {
@@ -418,16 +456,18 @@ export async function main(ns: NS) {
         action,
         args: (string | number)[] = []
       if (!settings.xp) {
-        target = targetInfo.find((t) => t.hackable)
-        action = "hack"
-        if (target === undefined) {
-          target = targetInfo.find((t) => t.growable)
-          action = "grow"
-        }
-        if (target === undefined) {
-          target = targetInfo.find((t) => t.weakenable)
-          action = "weaken"
-        }
+        target = targetInfo.find((t) => t.hackable || t.growable || t.weakenable)
+        action = target.hackable ? "hack" : target.growable ? "grow" : "weaken"
+        // target = targetInfo.find((t) => t.hackable)
+        // action = "hack"
+        // if (target === undefined) {
+        //   target = targetInfo.find((t) => t.growable)
+        //   action = "grow"
+        // }
+        // if (target === undefined) {
+        //   target = targetInfo.find((t) => t.weakenable)
+        //   action = "weaken"
+        // }
       }
       // If there's no available target, run hack on self for some XP.
       if (target === undefined) {
