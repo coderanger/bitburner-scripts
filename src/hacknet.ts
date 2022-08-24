@@ -279,6 +279,9 @@ export function HacknetSteps() {
       action: () => true,
     }),
 
+    // TODO if in a gang, don't upgrade until there is enough to buy the cheapest gang aug (ignoring anything over 1t).
+    // This will allow rapid cycle buying in another chain.
+
     new Step({
       name: "BuyHacknetServer",
       gather: () => undefined,
