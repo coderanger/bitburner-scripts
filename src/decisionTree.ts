@@ -60,6 +60,8 @@ export class Step<DataType> {
   action: Action<DataType>
   // If true, a failed predicate also aborts the chain.
   final: boolean
+  // If true, run even in dryRun.
+  dryRunSafe: boolean
 
   constructor(options: {
     name: string
@@ -68,6 +70,7 @@ export class Step<DataType> {
     log?: Log<DataType>
     action: Action<DataType>
     final?: boolean
+    dryRunSafe?: boolean
   }) {
     this.name = options.name
     this.gather = options.gather
@@ -75,10 +78,11 @@ export class Step<DataType> {
     this.log = options.log
     this.action = options.action
     this.final = !!options.final
+    this.dryRunSafe = !!options.dryRunSafe
   }
 
   get shouldSkipDryRun() {
-    return true
+    return !this.dryRunSafe
   }
 
   async run(ctx: Context) {
@@ -124,6 +128,7 @@ export class StatefulStep<DataType> extends Step<DataType> {
     log?: Log<DataType>
     action: Action<DataType>
     final?: boolean
+    dryRunSafe?: boolean
   }) {
     super({
       name: options.name,
@@ -154,6 +159,7 @@ export class StatefulStep<DataType> extends Step<DataType> {
       log: options.log,
       action: options.action,
       final: options.final,
+      dryRunSafe: options.dryRunSafe,
     })
   }
 }
@@ -167,13 +173,14 @@ export class RepeatingStep<DataType> extends Step<DataType> {
     log?: Log<DataType>
     action: Action<DataType>
     final?: boolean
+    dryRunSafe?: boolean
   }) {
     options.final = true
     super(options)
   }
 
   async run(ctx: Context) {
-    while (!(await super.run(ctx)) && !ctx.dryRun) {
+    while (!(await super.run(ctx)) && (this.dryRunSafe || !ctx.dryRun)) {
       // Just keep looping.
       await ctx.ns.sleep(1)
     }
@@ -189,11 +196,13 @@ export class EachStep<DataType> extends Step<DataType[]> {
     log?: Log<DataType>
     action: Action<DataType>
     final?: boolean
+    dryRunSafe?: boolean
   }) {
     const logFn = options.log
     super({
       name: options.name,
       final: options.final,
+      dryRunSafe: options.dryRunSafe,
       gather: options.gather,
       predicate: (ctx: Context, data: DataType[]) => data.length !== 0,
       log: async (ctx: Context, data: DataType[]) => {
