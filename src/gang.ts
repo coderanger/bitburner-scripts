@@ -222,7 +222,7 @@ function TaskGangMemberSteps(gangMember: string) {
       name: "ReduceWantedTask",
       gather: () => undefined,
       enter: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel >= 1000,
-      exit: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel <= 2,
+      exit: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel <= 100,
       log: () => `Tasking ${gangMember} to Vigilante Justice to reduce wanted level`,
       action: (ctx: Context) => {
         ctx.ns.gang.setMemberTask(gangMember, "Vigilante Justice")
