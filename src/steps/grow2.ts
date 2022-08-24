@@ -1,7 +1,6 @@
-import { step } from "./stepslib"
-import type { Flags } from "./stepslib"
 import type { NS } from "@ns"
 
-export const main = step(async (ns: NS, { server }: Flags) => {
-  await ns.grow(server)
-})
+export async function main(ns: NS) {
+  await ns.sleep(ns.args[0] as number)
+  await ns.grow(ns.args[1] as string)
+}
