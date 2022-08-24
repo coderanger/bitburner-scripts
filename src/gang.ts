@@ -257,16 +257,16 @@ function TaskGangMemberSteps(gangMember: string) {
       },
     }),
 
-    // TODO Check the expected time of everyone running Territory Warfare until we have enough to enable
-    // and do that if less than X minutes (10, 20, 30?)
-    // Game runs TW power math every 20 seconds (200 ms/cycle, 100 cycles/update, == 20 s/update)
-    // Per-member math https://github.com/danielyxie/bitburner/blob/738152d614a923e7a66a108b4c5d7c148d904851/src/Gang/GangMember.ts#L79
-    // return (this.hack + this.str + this.def + this.dex + this.agi + this.cha) / 95;
-    // Gang math https://github.com/danielyxie/bitburner/blob/5d2b81053d762111adb094849bf2d09f596b2157/src/Gang/Gang.ts#L331
-    // return 0.015 * Math.max(0.002, this.getTerritory()) * memberTotal;
-    // Only counts members in the TW task
-    // So compute how much more power we need right now, compute how long that would take, add on X% because other gangs
-    // are also gaining power at the same time.
+    new Step({
+      name: "AutoTerritoryWarfareTask",
+      gather: () => undefined,
+      predicate: (ctx: Context) => ctx.onceData["autoTwTask"] === true,
+      log: () => `Tasking ${gangMember} to Territory Warfare because it is almost ready`,
+      action: (ctx: Context) => {
+        ctx.ns.gang.setMemberTask(gangMember, "Territory Warfare")
+        return true
+      },
+    }),
 
     // TODO the rest of this.
 
@@ -274,11 +274,14 @@ function TaskGangMemberSteps(gangMember: string) {
       name: "FallbackTask",
       gather: (ctx: Context) => {
         const minutes = new Date().getMinutes() + ctx.ns.gang.getMemberNames().indexOf(gangMember)
-        if (minutes % 10 === 0) {
-          return "Territory Warfare"
-        }
-        const tasks = cachedBestTasks(ctx)
-        return ["Train Combat", tasks.respectTask, tasks.moneyTask][minutes % 3]
+        const bestTasks = cachedBestTasks(ctx)
+        const memberInfo = ctx.ns.gang.getMemberInformation(gangMember)
+        const isHighLevel = memberInfo.str_asc_mult >= 30 && memberInfo.def_asc_mult >= 30
+        return [
+          isHighLevel ? bestTasks.moneyTask : "Train Combat",
+          bestTasks.respectTask,
+          bestTasks.moneyTask,
+        ][minutes % 3]
       },
       predicate: () => true,
       log: (ctx: Context, taskName: string) => `Tasking ${gangMember} to ${taskName} as a fallback`,
@@ -353,6 +356,57 @@ export function GangSteps() {
               chain: UpgradeGangMemberSteps(member),
             })
         ),
+    }),
+
+    // Check the expected time of everyone running Territory Warfare until we have enough to enable
+    // and do that if less than X minutes (10, 20, 30?)
+    // Game runs TW power math every 20 seconds (200 ms/cycle, 100 cycles/update, == 20 s/update)
+    // Per-member math https://github.com/danielyxie/bitburner/blob/738152d614a923e7a66a108b4c5d7c148d904851/src/Gang/GangMember.ts#L79
+    // return (this.hack + this.str + this.def + this.dex + this.agi + this.cha) / 95;
+    // Gang math https://github.com/danielyxie/bitburner/blob/5d2b81053d762111adb094849bf2d09f596b2157/src/Gang/Gang.ts#L331
+    // return 0.015 * Math.max(0.002, this.getTerritory()) * memberTotal;
+    // Only counts members in the TW task
+    // So compute how much more power we need right now, compute how long that would take, add on X% because other gangs
+    // are also gaining power at the same time.
+    new Step({
+      name: "AutoTerritoryWarfareTask",
+      gather: () => undefined,
+      predicate: (ctx: Context) => {
+        // Work out what power we need right now to hit our 0.8 threshold (used below to enable TW).
+        const gang = ctx.ns.gang.getGangInformation()
+        if (gang.territoryWarfareEngaged) {
+          // Already enabled.
+          return false
+        }
+        const allGangs = ctx.ns.gang.getOtherGangInformation()
+        const allPowers: number[] = []
+        for (const faction in allGangs) {
+          if (faction !== gang.faction) {
+            allPowers.push(allGangs[faction].power * 4)
+          }
+        }
+        const neededPower = Math.max(...allPowers) - gang.power
+        if (neededPower <= 0) {
+          // Already done. This shouldn't happen often since we check above but maybe on the last cycle.
+          return false
+        }
+        // Work out our power gain per cycle. See above comment for game math (no formula available).
+        const memberTotal = ctx.ns.gang
+          .getMemberNames()
+          .map((name) => {
+            const member = ctx.ns.gang.getMemberInformation(name)
+            return (
+              (member.hack + member.str + member.def + member.dex + member.agi + member.cha) / 95
+            )
+          })
+          .reduce((a, b) => a + b, 0)
+        const powerPerUpdate = 0.015 * Math.max(0.002, gang.territory) * memberTotal
+        const minutesNeeded = neededPower / (powerPerUpdate * 3) // 3 updates/minute
+        return minutesNeeded <= 30
+      },
+      action: (ctx: Context) => {
+        ctx.onceData["autoTwTask"] = true
+      },
     }),
 
     new RunChainStep({
