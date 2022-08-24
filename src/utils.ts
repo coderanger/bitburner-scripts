@@ -37,12 +37,8 @@ export class Server {
 
   // How much RAM is available to use, taking reserved RAM on home into account.
   get ramAvailable() {
-    if (this.hostname === "home") {
-      const reserved = 128
-      return Math.max(this.info.maxRam - reserved - this.info.ramUsed, 0)
-    } else {
-      return this.info.maxRam - this.info.ramUsed
-    }
+    const reserved = this.hostname === "home" ? 128 : 0
+    return Math.max(this.info.maxRam - reserved - this.info.ramUsed, 0)
   }
 }
 
