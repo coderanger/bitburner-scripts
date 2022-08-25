@@ -271,6 +271,14 @@ export function HacknetSteps() {
       action: () => true,
     }),
 
+    // Wait for the first minute to allow for augmentation purchase chaining.
+    new Step({
+      name: "WaitForOneMinute",
+      gather: () => undefined,
+      predicate: (ctx: Context) => ctx.ns.getPlayer().playtimeSinceLastAug < 60_000,
+      action: () => true,
+    }),
+
     // Stop after an hour.
     new Step({
       name: "StopUpgradesAfterAnHour",
