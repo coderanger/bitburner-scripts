@@ -52,10 +52,14 @@ interface BatchStep {
 
 type Batch = BatchStep[]
 
-function analyzeGrowThreads(ns: NS, target: Server, cores: number) {
+function analyzeGrowThreads(ns: NS, target: Server, cores: number, moneyAvailable: number) {
   let threadsGuess = 10
   for (let n = 0; n < 10; n++) {
-    const requiredMoneyMul = target.info.moneyMax / (target.info.moneyAvailable + threadsGuess)
+    const requiredMoneyMul = target.info.moneyMax / (moneyAvailable + threadsGuess)
+    if (requiredMoneyMul <= 1) {
+      threadsGuess = Math.floor(threadsGuess / 2)
+      continue
+    }
     const threads = Math.ceil(ns.growthAnalyze(target.hostname, requiredMoneyMul, cores))
     if (threads === threadsGuess) {
       return threads
@@ -110,7 +114,7 @@ const AllocateTaskChain = new Chain("AllocateTask", [
     predicate: (ctx: Context, target: Server) =>
       ctx.data[`targetInitialized-${target!.hostname}`] !== true,
     action: (ctx: Context, target: Server) => {
-      const threads = analyzeGrowThreads(ctx.ns, target, 1)
+      const threads = analyzeGrowThreads(ctx.ns, target, 1, target.info.moneyAvailable)
       ;(ctx.onceData["attackBatch"] as Batch).push({
         script: "grow",
         threads,
@@ -132,7 +136,7 @@ const AllocateTaskChain = new Chain("AllocateTask", [
         target.info.hackDifficulty +
         batch.reduce((a, b) => a + b.securityDelta, 0) -
         target.info.minDifficulty
-      const threads = sec / ctx.ns.weakenAnalyze(1, 1)
+      const threads = Math.ceil(sec / ctx.ns.weakenAnalyze(1, 1))
       batch.push({
         script: "weaken",
         threads,
@@ -149,7 +153,9 @@ const AllocateTaskChain = new Chain("AllocateTask", [
     dryRunSafe: true,
     gather: (ctx: Context) => ctx.onceData["attackTarget"] as Server,
     action: (ctx: Context, target: Server) => {
-      const threads = ctx.ns.hackAnalyzeThreads(target.hostname, target.info.moneyMax - 1_000_000)
+      const threads = Math.ceil(
+        ctx.ns.hackAnalyzeThreads(target.hostname, target.info.moneyMax - 1_000_000)
+      )
       ;(ctx.onceData["attackBatch"] as Batch).push({
         script: "hack",
         threads,
@@ -165,8 +171,8 @@ const AllocateTaskChain = new Chain("AllocateTask", [
     gather: (ctx: Context) => ctx.onceData["attackTarget"] as Server,
     action: (ctx: Context, target: Server) => {
       const batch = ctx.onceData["attackBatch"] as Batch
-      const sec = batch.reduce((a, b) => a + b.securityDelta, 0) - target.info.minDifficulty
-      const threads = sec / ctx.ns.weakenAnalyze(1, 1)
+      const sec = batch.reduce((a, b) => a + b.securityDelta, 0)
+      const threads = Math.ceil(sec / ctx.ns.weakenAnalyze(1, 1))
       batch.push({
         script: "weaken",
         threads,
@@ -181,7 +187,7 @@ const AllocateTaskChain = new Chain("AllocateTask", [
     dryRunSafe: true,
     gather: (ctx: Context) => ctx.onceData["attackTarget"] as Server,
     action: (ctx: Context, target: Server) => {
-      const threads = analyzeGrowThreads(ctx.ns, target, 1)
+      const threads = analyzeGrowThreads(ctx.ns, target, 1, 1_000_000)
       ;(ctx.onceData["attackBatch"] as Batch).push({
         script: "grow",
         threads,
@@ -197,8 +203,8 @@ const AllocateTaskChain = new Chain("AllocateTask", [
     gather: (ctx: Context) => ctx.onceData["attackTarget"] as Server,
     action: (ctx: Context, target: Server) => {
       const batch = ctx.onceData["attackBatch"] as Batch
-      const sec = batch.reduce((a, b) => a + b.securityDelta, 0) - target.info.minDifficulty
-      const threads = sec / ctx.ns.weakenAnalyze(1, 1)
+      const sec = batch.reduce((a, b) => a + b.securityDelta, 0)
+      const threads = Math.ceil(sec / ctx.ns.weakenAnalyze(1, 1))
       batch.push({
         script: "weaken",
         threads,
@@ -234,7 +240,7 @@ const AttackChain = new Chain("Attack", [
           s.info.moneyMax > 10_000_000_000 &&
           s.info.hasAdminRights &&
           s.info.requiredHackingSkill <= ctx.player.skills.hacking &&
-          (ctx.data[`targetUnavailable-${s.hostname}`] || 0) < now &&
+          ((ctx.data[`targetUnavailable-${s.hostname}`] as number | undefined) || 0) < now &&
           ctx.onceData[`targetFailed-${s.hostname}`] !== true
       )
       if (targets.length === 0) {
@@ -246,6 +252,22 @@ const AttackChain = new Chain("Attack", [
       target ? `Using ${target?.hostname} as target` : "No targets available, running for XP",
     action: (ctx: Context, target: Server | undefined) => {
       ctx.onceData["attackTarget"] = target
+    },
+  }),
+
+  // Mark the target as initialized if needed.
+  new Step({
+    name: "MarkInitialized",
+    gather: (ctx: Context) => ctx.onceData["attackTarget"] as Server | undefined,
+    predicate: (ctx: Context, target: Server | undefined) =>
+      target !== undefined &&
+      ctx.data[`targetInitialized-${target.hostname}`] !== true &&
+      target.info.hackDifficulty === target.info.minDifficulty &&
+      target.info.moneyAvailable >= target.info.moneyMax * 0.9,
+    log: (ctx: Context, target: Server | undefined) =>
+      `Marking target ${target!.hostname} as initialized`,
+    action: (ctx: Context, target: Server | undefined) => {
+      ctx.data[`targetInitialized-${target!.hostname}`] = true
     },
   }),
 
@@ -303,7 +325,7 @@ const AttackChain = new Chain("Attack", [
         step.fullScript = STEP_SCRIPTS[step.script]
         step.ram = ctx.ns.getScriptRam(step.fullScript)
         if (step.args === undefined && target !== undefined) {
-          step.args = [target.hostname]
+          step.args = [step.delay, target.hostname]
         }
       }
     },
@@ -371,6 +393,18 @@ const AttackChain = new Chain("Attack", [
   }),
 
   new Step({
+    name: "Debug",
+    dryRunSafe: true,
+    gather: () => undefined,
+    action: (ctx: Context) => {
+      ctx.log.debug(
+        () => `target ${(ctx.onceData["attackTarget"] as Server | undefined)?.hostname}`
+      )
+      ctx.log.debug(() => `batch ${JSON.stringify(ctx.onceData["attackBatch"], undefined, 2)}`)
+    },
+  }),
+
+  new Step({
     name: "CheckAllocationFailed",
     dryRunSafe: true,
     gather: (ctx: Context) => ctx.onceData["attackTarget"] as Server | undefined,
@@ -415,18 +449,6 @@ const AttackChain = new Chain("Attack", [
           now + step.delay! + step.time + BATCH_PADDING
         )
       }
-    },
-  }),
-
-  new Step({
-    name: "Debug",
-    dryRunSafe: true,
-    gather: () => undefined,
-    action: (ctx: Context) => {
-      ctx.log.debug(
-        () => `target ${(ctx.onceData["attackTarget"] as Server | undefined)?.hostname}`
-      )
-      ctx.log.debug(() => `batch ${JSON.stringify(ctx.onceData["attackBatch"], undefined, 2)}`)
     },
   }),
 ])
@@ -552,7 +574,7 @@ export function HackingSteps() {
       name: "LaunchAttack",
       dryRunSafe: true,
       gather: () => undefined,
-      predicate: (ctx: Context) => ctx.onceData["attackDone"] !== true,
+      predicate: (ctx: Context) => ctx.onceData["attackDone"] !== true && false,
       action: async (ctx: Context) => {
         await AttackChain.run(ctx)
       },

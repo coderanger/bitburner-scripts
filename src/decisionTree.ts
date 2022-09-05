@@ -331,6 +331,8 @@ export function CreateContext(ns: NS) {
   ctx.dryRun = options["dry-run"] as boolean
   ctx.once = options.once as boolean
 
+  ns.atExit(() => ctx.log.flushBuffer())
+
   return ctx
 }
 

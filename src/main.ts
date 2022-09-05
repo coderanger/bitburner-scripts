@@ -1,4 +1,5 @@
 import { Chain, Context, EachStep, Execute, RunChainStep, Step } from "./decisionTree"
+import { FactionsSteps } from "./factions"
 import { GangSteps } from "./gang"
 import { HackingSteps } from "./hacking"
 import { HacknetSteps } from "./hacknet"
@@ -10,11 +11,38 @@ const CoreChains = [
   new Chain("Gang", GangSteps()),
   new Chain("Hacknet", HacknetSteps()),
   new Chain("Sleeves", SleevesSteps),
+  new Chain("Factions", FactionsSteps),
 ].map(
   (c) =>
     new RunChainStep({
       name: c.name,
       chain: c,
+    })
+)
+
+const ConditionalChains = [
+  {
+    name: "Augmentations",
+    script: "augmentations.js",
+    requiredRam: 256,
+  },
+  {
+    name: "OldMain",
+    script: "oldmain.js",
+    requiredRam: 256,
+  },
+].map(
+  (c) =>
+    new Step({
+      name: c.name,
+      gather: () => undefined,
+      predicate: (ctx: Context) =>
+        !ctx.once &&
+        ctx.servers["home"].info.maxRam >= c.requiredRam &&
+        !ctx.ns.ps("home").some((proc) => proc.filename === c.script),
+      action: (ctx: Context) => {
+        ctx.ns.exec(c.script, "home", 1)
+      },
     })
 )
 
@@ -28,12 +56,12 @@ const Steps = (
     new EachStep({
       name: "CommandPort",
       gather: (ctx: Context) => {
-        const commandPort = ctx.ns.getPortHandle(3)
+        // const commandPort = ctx.ns.getPortHandle(3)
         const commands: Command[] = []
-        while (!commandPort.empty()) {
-          const [cmd, ...args] = JSON.parse(commandPort.read().toString())
-          commands.push({ cmd, args })
-        }
+        // while (!commandPort.empty()) {
+        //   const [cmd, ...args] = JSON.parse(commandPort.read().toString())
+        //   commands.push({ cmd, args })
+        // }
         return commands
       },
       log: (ctx: Context, cmd: Command) => `Got command ${cmd.cmd} ${cmd.args}`,
@@ -49,7 +77,7 @@ const Steps = (
       },
     }),
   ] as Step<any>[]
-).concat(CoreChains)
+).concat(CoreChains, ConditionalChains)
 
 export async function main(ns: NS) {
   await Execute(ns, "Main", Steps)

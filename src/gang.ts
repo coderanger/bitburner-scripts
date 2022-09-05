@@ -110,14 +110,11 @@ function UpgradeGangMemberSteps(gangMember: string) {
             continue
           }
           const stats = ctx.ns.gang.getEquipmentStats(equip)
-          if (stats.hack !== undefined) {
-            // Ignore hacking gear.
-            continue
-          }
           const cost = ctx.ns.gang.getEquipmentCost(equip)
           const type = ctx.ns.gang.getEquipmentType(equip)
-          const maxPrice = type === "Augmentation" ? 0.5 : 0.02
-          // Buy anything costs less than 1% of total money.
+          // How much to pay. Augmentations are 50%, normal upgrades 2%, anything that's for hacking is 1% of that.
+          const maxPrice =
+            (type === "Augmentation" ? 0.5 : 0.02) * (stats.hack === undefined ? 1 : 0.01)
           if (cost <= money * maxPrice) {
             toPurchase.push(equip)
             money -= cost
@@ -274,12 +271,17 @@ function TaskGangMemberSteps(gangMember: string) {
       name: "FallbackTask",
       gather: (ctx: Context) => {
         const minutes = new Date().getMinutes() + ctx.ns.gang.getMemberNames().indexOf(gangMember)
+        const isEarly = ctx.player.playtimeSinceLastAug < 60_000
+        if (!isEarly && minutes % 15 === 0 && ctx.ns.gang.getGangInformation().territory <= 0.95) {
+          return "Territory Warfare"
+        }
         const bestTasks = cachedBestTasks(ctx)
         const memberInfo = ctx.ns.gang.getMemberInformation(gangMember)
         const isHighLevel = memberInfo.str_asc_mult >= 30 && memberInfo.def_asc_mult >= 30
+        const hasGangRep = ctx.ns.gang.getGangInformation().respect >= 10_000_000_000
         return [
-          isHighLevel ? bestTasks.moneyTask : "Train Combat",
-          bestTasks.respectTask,
+          isHighLevel || isEarly ? bestTasks.moneyTask : "Train Combat",
+          hasGangRep && !isEarly ? bestTasks.moneyTask : bestTasks.respectTask,
           bestTasks.moneyTask,
         ][minutes % 3]
       },
@@ -426,7 +428,7 @@ export function GangSteps() {
       gather: () => undefined,
       predicate: (ctx: Context) => {
         const gang = ctx.ns.gang.getGangInformation()
-        if (gang.territoryWarfareEngaged) {
+        if (gang.territoryWarfareEngaged || gang.territory === 1.0) {
           // Already on.
           return false
         }
@@ -442,6 +444,17 @@ export function GangSteps() {
       },
       log: () => "Enabling territory warfare",
       action: (ctx: Context) => ctx.ns.gang.setTerritoryWarfare(true),
+    }),
+
+    new Step({
+      name: "DisableTerritoryWarfare",
+      gather: () => undefined,
+      predicate: (ctx: Context) => {
+        const gang = ctx.ns.gang.getGangInformation()
+        return gang.territoryWarfareEngaged && gang.territory === 1.0
+      },
+      log: () => "Disabling territory warfare",
+      action: (ctx: Context) => ctx.ns.gang.setTerritoryWarfare(false),
     }),
   ]
 }

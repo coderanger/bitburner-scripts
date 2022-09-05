@@ -2,7 +2,7 @@ import { Context, Execute, RepeatingStep, Step } from "./decisionTree"
 import type { Server } from "./utils"
 import type { NS, Player } from "@ns"
 
-type UpgradeType = "level" | "ram" | "core" | "newNode"
+type UpgradeType = "level" | "ram" | "core" | "newNode" | "cache"
 
 interface UpgradeScenario {
   index: number
@@ -163,9 +163,9 @@ function bestUpgrade(ns: NS) {
 
 interface SpendHashesOn {
   action: string
-  target: Server | undefined
-  count: number
   cost: number
+  target?: Server
+  count: number
 }
 
 export function HacknetSteps() {
@@ -173,84 +173,86 @@ export function HacknetSteps() {
     new Step({
       name: "SpendHashes",
       gather: (ctx: Context) => {
-        let action: string | undefined, target: Server | undefined
-        const minSecCost = ctx.ns.hacknet.hashCost("Reduce Minimum Security")
-        const maxMoneyCost = ctx.ns.hacknet.hashCost("Increase Maximum Money")
-        if (minSecCost < maxMoneyCost) {
-          // Look for a target with the most max money and not at minSec 1.
-          target = Object.values(ctx.servers)
-            .filter((s) => s.info.minDifficulty > 1)
-            .reduce((prev, cur) => (prev.info.moneyMax >= cur.info.moneyMax ? prev : cur))
-          action = "Reduce Minimum Security"
-        } else {
-          // Look for the server with the most max money under 10T (it's a soft cap but still).
-          target = Object.values(ctx.servers)
-            .filter((s) => s.info.moneyMax < 10_000_000_000_000)
-            .reduce((prev, cur) => (prev.info.moneyMax >= cur.info.moneyMax ? prev : cur))
-          action = "Increase Maximum Money"
+        const available: SpendHashesOn[] = []
+        // Hacking upgrade actions.
+        // Reduce sec.
+        const minSecTarget = Object.values(ctx.servers)
+          .filter((s) => s.info.minDifficulty > 1)
+          .reduce((prev, cur) => (prev.info.moneyMax >= cur.info.moneyMax ? prev : cur))
+        if (ctx.player.skills.hacking >= minSecTarget.info.requiredHackingSkill) {
+          available.push({
+            action: "Reduce Minimum Security",
+            cost: ctx.ns.hacknet.hashCost("Reduce Minimum Security"),
+            target: minSecTarget,
+            count: 1,
+          })
+        }
+        // Increase money.
+        const maxMoneyTarget = Object.values(ctx.servers)
+          .filter((s) => s.info.moneyMax < 10_000_000_000_000)
+          .reduce((prev, cur) => (prev.info.moneyMax >= cur.info.moneyMax ? prev : cur))
+        if (ctx.player.skills.hacking >= minSecTarget.info.requiredHackingSkill) {
+          available.push({
+            action: "Increase Maximum Money",
+            cost: ctx.ns.hacknet.hashCost("Increase Maximum Money"),
+            target: maxMoneyTarget,
+            count: 1,
+          })
         }
 
-        // Check if we have a target that isn't hackable yet. This means it will generate money for a short while at startup.
-        if (
-          ctx.player.skills.hacking < target.info.requiredHackingSkill &&
-          ctx.player.skills.hacking < 800
-        ) {
-          target = undefined
-          action = "Sell for Money"
+        // Bladeburner actions.
+        if (ctx.player.inBladeburner) {
+          available.push({
+            action: "Exchange for Bladeburner Rank",
+            cost: ctx.ns.hacknet.hashCost("Exchange for Bladeburner Rank"),
+            count: 1,
+          })
+          available.push({
+            action: "Exchange for Bladeburner SP",
+            cost: ctx.ns.hacknet.hashCost("Exchange for Bladeburner SP"),
+            count: 1,
+          })
+        }
+
+        // Corporation actions.
+        if (ctx.player.hasCorporation) {
+          available.push({
+            action: "Sell for Corporation Funds",
+            cost: ctx.ns.hacknet.hashCost("Sell for Corporation Funds"),
+            count: 1,
+          })
+          // TODO when to do research?
         }
 
         const current = ctx.ns.hacknet.numHashes()
         const max = ctx.ns.hacknet.hashCapacity()
-        // const cost = ctx.ns.hacknet.hashCost(action)
         // Check if we're still early in the run, if so just sell them off as we can. Otherwise
         // keep 50% of capacity so we can use them for other things.
-        // const player = ctx.ns.getPlayer()
         const toKeepPct = max <= 10_000 || current >= max * 0.9 ? 0 : 0.5
         const toKeep = Math.min(Math.ceil(max * toKeepPct), 50_000)
         const effectiveCurrent = current - toKeep
+        const affordable = available.filter((a) => a.cost <= max)
 
-        // Work out how many count we can afford.
-        // Broken binary search thing.
-        // let cost = 0
-        // let count = 1000
-        // let stride = count
-        // while (stride >= 0.5) {
-        //   count = Math.floor(count)
-        //   stride /= 2
-        //   cost = ctx.ns.hacknet.hashCost(action, count)
-        //   if (cost === effectiveCurrent) {
-        //     // We're done.
-        //     stride = 0
-        //   } else if (cost > effectiveCurrent) {
-        //     count -= stride
-        //   } else {
-        //     count += stride
-        //   }
-        // }
-        // count = Math.max(Math.floor(count), 0)
-
-        // Simpler count algorithm that takes advantage of Sell for Money being linear.
-        let count = 0
-        let cost = 0
-        if (action === "Sell for Money") {
-          const costPer = ctx.ns.hacknet.hashCost(action)
-          count = Math.floor(effectiveCurrent / costPer)
-          cost = count * costPer
-        } else {
-          count = 1
-          cost = ctx.ns.hacknet.hashCost(action)
-          if (cost > effectiveCurrent) {
-            count = 0
-            cost = 0
+        // Do we have no actions?
+        if (affordable.length === 0) {
+          // As many Sell for Money as we can.
+          const costPer = ctx.ns.hacknet.hashCost("Sell for Money")
+          const count = Math.floor(effectiveCurrent / costPer)
+          return {
+            action: "Sell for Money",
+            cost: costPer * count,
+            count,
           }
         }
 
-        return {
-          action,
-          target,
-          count,
-          cost,
-        } as SpendHashesOn
+        // Find the cheapest.
+        const cheapestAction = affordable.reduce((p, c) => (p.cost <= c.cost ? p : c))
+        // And check if we can afford it.
+        if (cheapestAction.cost > effectiveCurrent) {
+          cheapestAction.cost = 0
+          cheapestAction.count = 0
+        }
+        return cheapestAction
       },
       predicate: (ctx: Context, data: SpendHashesOn) => data.count > 0,
       log: (ctx: Context, data: SpendHashesOn) =>
@@ -283,7 +285,7 @@ export function HacknetSteps() {
     new Step({
       name: "StopUpgradesAfterAnHour",
       gather: () => undefined,
-      predicate: (ctx: Context) => ctx.ns.getPlayer().playtimeSinceLastAug >= 3600000,
+      predicate: (ctx: Context) => ctx.ns.getPlayer().playtimeSinceLastAug >= 3_600_000,
       action: () => true,
     }),
 
@@ -326,6 +328,36 @@ export function HacknetSteps() {
             ctx.ns.hacknet.upgradeCore(upgrade.index, 1)
             break
         }
+      },
+    }),
+
+    new Step({
+      name: "UpgradeCache",
+      gather: (ctx: Context) => {
+        const numNodes = ctx.ns.hacknet.numNodes()
+        let totalCache = 0
+        const upgrades: UpgradeScenario[] = []
+        for (let i = 0; i < numNodes; i++) {
+          const cache = ctx.ns.hacknet.getNodeStats(i).cache
+          if (cache === undefined) {
+            continue
+          }
+          totalCache += cache
+          const cost = ctx.ns.hacknet.getCacheUpgradeCost(i, 1)
+          upgrades.push({ index: i, type: "cache", cost, production: 0, baseProduction: cache })
+        }
+        if (upgrades.length === 0 || totalCache >= 1_000_000) {
+          return undefined
+        }
+        return upgrades.reduce((a, b) => (a.baseProduction <= b.baseProduction ? a : b))
+      },
+      predicate: (ctx: Context, upgrade: UpgradeScenario | undefined) =>
+        upgrade !== undefined && upgrade.cost <= ctx.player.money * 0.01,
+      log: (ctx: Context, upgrade: UpgradeScenario | undefined) =>
+        `Upgrading Cache on Hacknet Server ${upgrade?.index}`,
+      action: (ctx: Context, upgrade: UpgradeScenario | undefined) => {
+        if (upgrade === undefined) throw "Upgrade is undefined"
+        ctx.ns.hacknet.upgradeCache(upgrade.index, 1)
       },
     }),
   ]

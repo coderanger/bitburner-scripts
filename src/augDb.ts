@@ -1,3 +1,4 @@
+import { moneyStr } from "./utils"
 import type { AugmentationStats, NS } from "@ns"
 
 const FACTIONS = [
@@ -43,6 +44,12 @@ export interface Augmentation {
   factions: string[]
 }
 
+export interface AvailableAugmentation {
+  aug: Augmentation
+  faction: string
+  cost: number
+}
+
 export class AugDB {
   augs: Record<string, Augmentation> = {}
 
@@ -72,5 +79,63 @@ export class AugDB {
       }
     }
     return augs
+  }
+
+  getAvailable(ns: NS) {
+    const available: AvailableAugmentation[] = []
+    const existing = ns.singularity.getOwnedAugmentations(true).reduce((a, b) => {
+      a[b] = true
+      return a
+    }, {} as Record<string, boolean>)
+    const player = ns.getPlayer()
+    for (const augName in this.augs) {
+      if (existing[augName]) {
+        continue
+      }
+      const aug = this.augs[augName]
+      const availableFrom = aug.factions.filter(
+        (faction) => ns.singularity.getFactionRep(faction) >= aug.rep
+      )
+      if (availableFrom.length === 0 || !aug.preReqs.every((a) => existing[a])) {
+        continue
+      }
+      const cost = ns.singularity.getAugmentationPrice(augName)
+      if (cost > player.money) {
+        continue
+      }
+      available.push({
+        aug,
+        cost,
+        faction: availableFrom[0],
+      })
+    }
+    return available
+  }
+}
+
+export async function main(ns: NS) {
+  const opts = ns.flags([
+    ["available", false],
+    ["missing", false],
+  ])
+  const augDb = new AugDB(ns)
+  const existing = ns.singularity.getOwnedAugmentations(true).reduce((a, b) => {
+    a[b] = true
+    return a
+  }, {} as Record<string, boolean>)
+  if (opts.available) {
+    ns.tprint("Available augmentations:")
+    const available = augDb.getAvailable(ns)
+    for (const avail of available) {
+      ns.tprint(`${avail.aug.name} from ${avail.faction} for ${moneyStr(avail.cost)}`)
+    }
+  }
+  if (opts.missing) {
+    ns.tprint("Missing augmentations:")
+    for (const augName in augDb.augs) {
+      if (!existing[augName]) {
+        ns.tprint(`${augName} from ${augDb.augs[augName].factions.join(", ")}`)
+      }
+    }
   }
 }

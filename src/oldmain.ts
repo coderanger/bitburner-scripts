@@ -166,7 +166,13 @@ export async function main(ns: NS) {
   // const extraWorkers = initialData.extraWorkers || []
   const growsInARow = initialData.growsInARow || {}
   const useNetworkWorkers = ns.getServerMaxRam("home") <= 512
-  const settings = { quiet: false, xp: false, useHacknet: false, ...initialData.settings }
+  const settings = {
+    quiet: false,
+    xp: false,
+    useHacknet: false,
+    hackBest: false,
+    ...initialData.settings,
+  }
 
   const writeData = async () => {
     const data = {
@@ -177,7 +183,7 @@ export async function main(ns: NS) {
       growsInARow,
       settings,
     }
-    await ns.write("/.daemon.json", JSON.stringify(data), "w")
+    await ns.write("/.daemon.json.txt", JSON.stringify(data), "w")
   }
 
   // Load all servers and player data.
@@ -343,7 +349,8 @@ export async function main(ns: NS) {
     }
 
     // Get our worker list.
-    const workers = ["home"].concat(ns.getPurchasedServers())
+    // const workers = ["home"].concat(ns.getPurchasedServers())
+    const workers = ns.getPurchasedServers()
 
     // If we're using the network for workers, find what we have available.
     for (const s in servers) {
@@ -412,6 +419,10 @@ export async function main(ns: NS) {
     status.targets = targets
 
     // Find idle targets.
+    const bestMoney = targets.reduce(
+      (a, b) => (a >= ns.getServerMaxMoney(b) ? a : ns.getServerMaxMoney(b)),
+      0
+    )
     const occupiedTargets = runningStuff
       .filter((s) => s.action !== "/steps/selfhack.js" && s.target !== null)
       .map((s) => s.target)
@@ -428,6 +439,9 @@ export async function main(ns: NS) {
           growable: false,
           weakenable: false,
           hackable: false,
+          isBest:
+            ns.getServerMaxMoney(server) === bestMoney ||
+            ns.getServerMaxMoney(server) >= 1_000_000_000_000,
         }
       })
       .map((t) => {
@@ -455,9 +469,19 @@ export async function main(ns: NS) {
       let target: any,
         action,
         args: (string | number)[] = []
-      if (!settings.xp) {
-        target = targetInfo.find((t) => t.hackable || t.growable || t.weakenable)
-        action = target.hackable ? "hack" : target.growable ? "grow" : "weaken"
+      if (!settings.xp || settings.hackBest) {
+        target = targetInfo.find(
+          (t) =>
+            (settings.xp && settings.hackBest ? t.isBest : true) &&
+            (t.hackable || t.growable || t.weakenable)
+        )
+        action = target?.hackable
+          ? "hack"
+          : target?.growable
+          ? "grow"
+          : target?.weakenable
+          ? "weaken"
+          : undefined
         // target = targetInfo.find((t) => t.hackable)
         // action = "hack"
         // if (target === undefined) {
