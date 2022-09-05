@@ -201,6 +201,18 @@ function TaskGangMemberSteps(gangMember: string) {
       },
     }),
 
+    new StatefulStep({
+      name: "ReduceWantedTask",
+      gather: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedPenalty,
+      enter: (ctx: Context, wantedPenalty: number) => wantedPenalty <= 0.999,
+      exit: (ctx: Context, wantedPenalty: number) => wantedPenalty >= 0.9999,
+      log: () => `Tasking ${gangMember} to Vigilante Justice to reduce wanted level`,
+      action: (ctx: Context) => {
+        ctx.ns.gang.setMemberTask(gangMember, "Vigilante Justice")
+        return true
+      },
+    }),
+
     new Step({
       name: "BootstrapRespectTask",
       gather: () => undefined,
@@ -211,18 +223,6 @@ function TaskGangMemberSteps(gangMember: string) {
         } respect until we have 12 members`,
       action: (ctx: Context) => {
         ctx.ns.gang.setMemberTask(gangMember, cachedBestTasks(ctx).respectTask)
-        return true
-      },
-    }),
-
-    new StatefulStep({
-      name: "ReduceWantedTask",
-      gather: () => undefined,
-      enter: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel >= 1000,
-      exit: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedLevel <= 100,
-      log: () => `Tasking ${gangMember} to Vigilante Justice to reduce wanted level`,
-      action: (ctx: Context) => {
-        ctx.ns.gang.setMemberTask(gangMember, "Vigilante Justice")
         return true
       },
     }),
