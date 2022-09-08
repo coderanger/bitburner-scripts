@@ -1,6 +1,7 @@
+import { Bladeburner } from "./data/bladeburner"
 import { LOG_LEVELS, Logger } from "./log"
 import type { LogLevelType } from "./log"
-import { Server, scanNetwork } from "/utils"
+import { Server, scanNetwork } from "./utils"
 import type { NS, Player } from "@ns"
 
 export class Context {
@@ -14,10 +15,12 @@ export class Context {
   chainPath: string[] = []
   servers: Record<string, Server> = {}
   player!: Player
+  bladeburner: Bladeburner
 
   constructor(ns: NS) {
     this.ns = ns
     this.log = new Logger(ns)
+    this.bladeburner = new Bladeburner(ns)
     this.reset()
   }
 
@@ -25,6 +28,7 @@ export class Context {
     this.onceData = {}
     this.servers = scanNetwork(this.ns)
     this.player = this.ns.getPlayer()
+    this.bladeburner.load()
   }
 
   perfStart(level: keyof typeof LOG_LEVELS = "trace") {

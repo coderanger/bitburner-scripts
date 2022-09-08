@@ -31,6 +31,11 @@ const ConditionalChains = [
     script: "oldmain.js",
     requiredRam: 256,
   },
+  {
+    name: "Bladeburner",
+    script: "bladeburner.js",
+    requiredRam: 256,
+  },
 ].map(
   (c) =>
     new Step({
