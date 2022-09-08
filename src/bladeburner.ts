@@ -56,6 +56,18 @@ export const BladeburnerSteps = [
     action: () => false,
   }),
 
+  new Step({
+    name: "JoinFaction",
+    gather: () => undefined,
+    predicate: (ctx: Context) =>
+      ctx.ns.bladeburner.getRank() >= 25 && !ctx.player.factions.includes("Bladeburners"),
+    log: () => "Joining Bladeburner faction",
+    action: (ctx: Context) => {
+      const ok = ctx.ns.bladeburner.joinBladeburnerFaction()
+      if (!ok) throw "Unable to join Bladeburner faction"
+    },
+  }),
+
   // Write out a JSON file with current Bladeburner state for use in other subsystems.
   new Step({
     name: "WriteData",
@@ -129,6 +141,16 @@ export const BladeburnerSteps = [
         if (!ok) throw `Unable to upgrade skill ${skill} by x${toBuy[skill]}`
       }
     },
+  }),
+
+  // If we aren't already in gang, don't try to run Bladeburner actions yet, need
+  // to do crimes and whatnot first. In theory we could check for the Simulacrum
+  // aug but if we aren't in a gang, then no way we have that yet.
+  new Step({
+    name: "CheckInGang",
+    gather: () => undefined,
+    predicate: (ctx: Context) => !ctx.ns.gang.inGang(),
+    action: () => true,
   }),
 
   // TODO a way to disable this for doing non-bladeburner activities.
@@ -233,6 +255,16 @@ export const BladeburnerSteps = [
       if (name === undefined) throw "Invalid name"
       doBladeburnerAction(ctx, "Contract", name)
       return true
+    },
+  }),
+
+  // If we got this far, something is wrong.
+  new Step({
+    name: "Stop",
+    gather: () => undefined,
+    log: () => "Stopping Bladeburner action",
+    action: (ctx: Context) => {
+      ctx.ns.bladeburner.stopBladeburnerAction()
     },
   }),
 ]
