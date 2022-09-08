@@ -1,5 +1,5 @@
 import { Context, Execute, RunChainStep, StatefulStep, Step } from "./decisionTree"
-import type { NS } from "@ns"
+import type { GangGenInfo, NS } from "@ns"
 
 const CRIME_GANG_FACTIONS = ["Slum Snakes", "Tetrads", "The Syndicate"]
 const GANG_MEMBER_NAMES = [
@@ -53,11 +53,11 @@ function UpgradeGangMemberSteps(gangMember: string) {
           if (stat.current >= 4 && ctx.ns.gang.getMemberNames().length < 12) {
             // Ascending will keep resetting respect which prevents getting all our members.
             ready = false
-          } else if (stat.current < 30) {
-            const threshold = stat.current < 10 ? 2 : 5
+          } else if (stat.current < 50) {
+            const threshold = stat.current < 10 ? 2 : stat.current < 35 ? 5 : 15
             ready = stat.current - (stat.current % threshold) + threshold <= stat.next
           } else {
-            // Just don't care past 30.
+            // Just don't care past 35.
             ready = false
           }
           readyStats[statName] = ready
@@ -203,9 +203,11 @@ function TaskGangMemberSteps(gangMember: string) {
 
     new StatefulStep({
       name: "ReduceWantedTask",
-      gather: (ctx: Context) => ctx.ns.gang.getGangInformation().wantedPenalty,
-      enter: (ctx: Context, wantedPenalty: number) => wantedPenalty <= 0.999,
-      exit: (ctx: Context, wantedPenalty: number) => wantedPenalty >= 0.9999,
+      gather: (ctx: Context) => ctx.ns.gang.getGangInformation(),
+      enter: (ctx: Context, { wantedPenalty, wantedLevel }: GangGenInfo) =>
+        wantedPenalty <= 0.95 && wantedLevel > 100,
+      exit: (ctx: Context, { wantedPenalty, wantedLevel }: GangGenInfo) =>
+        wantedPenalty >= 0.99 || wantedLevel < 10,
       log: () => `Tasking ${gangMember} to Vigilante Justice to reduce wanted level`,
       action: (ctx: Context) => {
         ctx.ns.gang.setMemberTask(gangMember, "Vigilante Justice")
@@ -278,7 +280,7 @@ function TaskGangMemberSteps(gangMember: string) {
         const bestTasks = cachedBestTasks(ctx)
         const memberInfo = ctx.ns.gang.getMemberInformation(gangMember)
         const isHighLevel = memberInfo.str_asc_mult >= 30 && memberInfo.def_asc_mult >= 30
-        const hasGangRep = ctx.ns.gang.getGangInformation().respect >= 10_000_000_000
+        const hasGangRep = ctx.ns.gang.getGangInformation().respect >= 1_000_000_000
         return [
           isHighLevel || isEarly ? bestTasks.moneyTask : "Train Combat",
           hasGangRep && !isEarly ? bestTasks.moneyTask : bestTasks.respectTask,
