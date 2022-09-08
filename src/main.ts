@@ -4,6 +4,7 @@ import { GangSteps } from "./gang"
 import { HackingSteps } from "./hacking"
 import { HacknetSteps } from "./hacknet"
 import { SleevesSteps } from "./sleeves"
+import { moneyStr } from "./utils"
 import type { NS } from "@ns"
 
 const CoreChains = [
@@ -79,6 +80,19 @@ const Steps = (
             await ctx.ns.alert(`Unknown command ${cmd.cmd}`)
             break
         }
+      },
+    }),
+
+    new Step({
+      name: "UpgradeHomeRAM",
+      gather: (ctx: Context) => ctx.ns.singularity.getUpgradeHomeRamCost(),
+      predicate: (ctx: Context, cost: number) =>
+        cost < ctx.player.money && ctx.servers.home.info.maxRam < 512,
+      log: (ctx: Context, cost: number) => `Upgrading home server RAM for $${moneyStr(cost)}`,
+      action: (ctx: Context, cost: number) => {
+        ctx.ns.singularity.upgradeHomeRam()
+        ctx.servers.home.refresh()
+        ctx.player.money -= cost
       },
     }),
   ] as Step<any>[]
