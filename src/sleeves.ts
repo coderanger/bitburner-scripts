@@ -98,27 +98,6 @@ function SleeveSteps(num: number) {
     }),
 
     new StatefulStep({
-      name: "BladeburnerInfiltration",
-      gather: (ctx: Context) => {
-        if (ctx.bladeburner.data === undefined) return undefined
-        return ctx.bladeburner.data.contracts
-          .concat(ctx.bladeburner.data.operations)
-          .reduce((p, c) => (p.remaining <= c.remaining ? p : c)).remaining
-      },
-      enter: (ctx: Context, worstAvailable: number | undefined) =>
-        worstAvailable !== undefined && worstAvailable <= 10,
-      exit: (ctx: Context, worstAvailable: number | undefined) =>
-        worstAvailable === undefined || worstAvailable >= 50,
-      action: (ctx: Context) => {
-        const task = ctx.ns.sleeve.getTask(num)
-        if (task?.type === "INFILTRATE") return true
-        const ok = ctx.ns.sleeve.setToBladeburnerAction(num, "Infiltrate synthoids")
-        if (!ok) throw "Unable to start infiltration"
-        return true
-      },
-    }),
-
-    new StatefulStep({
       name: "BladeburnerFieldAnalysis",
       gather: (ctx: Context) => {
         if (ctx.bladeburner.data === undefined) return undefined
@@ -137,6 +116,27 @@ function SleeveSteps(num: number) {
         if (task?.actionType === "General" && task?.actionName === "Field Analysis") return true
         const ok = ctx.ns.sleeve.setToBladeburnerAction(num, "Field analysis")
         if (!ok) throw "Unable to start field analysis"
+        return true
+      },
+    }),
+
+    new StatefulStep({
+      name: "BladeburnerInfiltration",
+      gather: (ctx: Context) => {
+        if (ctx.bladeburner.data === undefined) return undefined
+        return ctx.bladeburner.data.contracts
+          .concat(ctx.bladeburner.data.operations)
+          .reduce((p, c) => (p.remaining <= c.remaining ? p : c)).remaining
+      },
+      enter: (ctx: Context, worstAvailable: number | undefined) =>
+        worstAvailable !== undefined && worstAvailable <= 10,
+      exit: (ctx: Context, worstAvailable: number | undefined) =>
+        worstAvailable === undefined || worstAvailable >= 50,
+      action: (ctx: Context) => {
+        const task = ctx.ns.sleeve.getTask(num)
+        if (task?.type === "INFILTRATE") return true
+        const ok = ctx.ns.sleeve.setToBladeburnerAction(num, "Infiltrate synthoids")
+        if (!ok) throw "Unable to start infiltration"
         return true
       },
     }),
