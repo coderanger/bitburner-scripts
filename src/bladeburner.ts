@@ -18,14 +18,42 @@ const SKILL_COST_MULTIPLIERS: Record<string, number> = {
   Hyperdrive: 5, // +xp
 }
 
-const doBladeburnerAction = (ctx: Context, type: string, name: string) => {
-  const cur = ctx.ns.bladeburner.getCurrentAction()
-  if (cur.type === type && cur.name === name) return false
-  // This is unhelpful for dry-run analysis but that's a problem for another day.
-  ctx.log.info(`Starting Bladeburner action ${type} ${name}`)
-  const ok = ctx.ns.bladeburner.startAction(type, name)
-  if (!ok) throw `Unable to start Bladeburner action ${type} ${name}`
-  return true
+function SetBladeburnerActionSteps(type: string, name: string) {
+  return [
+    new Step({
+      name: "StopNonBladeburnerAction",
+      gather: () => undefined,
+      predicate: (ctx: Context) =>
+        ctx.ns.singularity.getCurrentWork() !== null &&
+        !ctx.ns.singularity.getOwnedAugmentations().includes("The Blade's Simulacrum"),
+      log: () => "Stopping non-Bladeburner work",
+      action: (ctx: Context) => {
+        ctx.ns.singularity.stopAction()
+      },
+    }),
+
+    new Step({
+      name: "StartAction",
+      gather: () => undefined,
+      predicate: (ctx: Context) => {
+        const curAction = ctx.ns.bladeburner.getCurrentAction()
+        return curAction.type !== type || curAction.name !== name
+      },
+      log: () => `Starting Bladeburner action ${type} ${name}`,
+      action: (ctx: Context) => {
+        const ok = ctx.ns.bladeburner.startAction(type, name)
+        if (!ok) throw `Unable to start Bladeburner action ${type} ${name}`
+        return true
+      },
+    }),
+
+    // So we always bail on the parent chain.
+    new Step({
+      name: "TerminateChain",
+      gather: () => undefined,
+      action: () => true,
+    }),
+  ]
 }
 
 export const BladeburnerSteps = [
@@ -92,8 +120,8 @@ export const BladeburnerSteps = [
           .filter((name) => ctx.ns.bladeburner.getBlackOpRank(name) <= rank)
           .map((name) => ({
             name,
-            remaining: ctx.ns.bladeburner.getActionCountRemaining("Black Op", name),
-            successChance: ctx.ns.bladeburner.getActionEstimatedSuccessChance("Black Op", name),
+            remaining: ctx.ns.bladeburner.getActionCountRemaining("BlackOp", name),
+            successChance: ctx.ns.bladeburner.getActionEstimatedSuccessChance("BlackOp", name),
           })),
       }
       await ctx.bladeburner.update(data)
@@ -105,6 +133,7 @@ export const BladeburnerSteps = [
     gather: (ctx: Context) => {
       const points = ctx.ns.bladeburner.getSkillPoints()
       const skills = ctx.ns.bladeburner.getSkillNames()
+      const overclockLevel = ctx.ns.bladeburner.getSkillLevel("Overclock")
       const toBuy: Record<string, number> = {}
       let toBuyCost = 0
       while (true) {
@@ -114,7 +143,10 @@ export const BladeburnerSteps = [
           const nextCount = curCount + 1
           const curCost =
             curCount === 0 ? 0 : ctx.ns.bladeburner.getSkillUpgradeCost(skill, curCount)
-          const nextCost = ctx.ns.bladeburner.getSkillUpgradeCost(skill, nextCount)
+          const nextCost =
+            skill === "Overclock" && overclockLevel + curCount >= 90
+              ? Number.MAX_SAFE_INTEGER
+              : ctx.ns.bladeburner.getSkillUpgradeCost(skill, nextCount)
           const cost = nextCost - curCost
           return { skill, cost, rank: cost * SKILL_COST_MULTIPLIERS[skill] }
         })
@@ -178,50 +210,45 @@ export const BladeburnerSteps = [
 
   // Pick a task.
   new StatefulStep({
+    dryRunSafe: true,
     name: "LowHealthOrStamina",
     gather: (ctx: Context) => ctx.ns.bladeburner.getStamina(),
     enter: (ctx: Context, [curStamina, maxStamina]: [number, number]) =>
       ctx.player.hp.current <= ctx.player.hp.max * 0.5 || curStamina <= maxStamina * 0.6,
     exit: (ctx: Context, [curStamina, maxStamina]: [number, number]) =>
       ctx.player.hp.current >= ctx.player.hp.max * 0.9 && curStamina >= maxStamina * 0.9,
-    action: (ctx: Context) => {
-      doBladeburnerAction(ctx, "General", "Hyperbolic Regeneration Chamber")
-      return true
-    },
+    action: () => SetBladeburnerActionSteps("General", "Hyperbolic Regeneration Chamber"),
   }),
 
   new StatefulStep({
+    dryRunSafe: true,
     name: "HighChaos",
     gather: (ctx: Context) => ctx.ns.bladeburner.getCityChaos(ctx.ns.bladeburner.getCity()),
     enter: (ctx: Context, chaos: number) => chaos >= 25,
     exit: (ctx: Context, chaos: number) => chaos <= 1,
-    action: (ctx: Context) => {
-      doBladeburnerAction(ctx, "General", "Diplomacy")
-      return true
-    },
+    action: () => SetBladeburnerActionSteps("General", "Diplomacy"),
   }),
 
   new Step({
     name: "BlackOps",
+    dryRunSafe: true,
     gather: (ctx: Context) =>
       ctx.ns.bladeburner
         .getBlackOpNames()
-        .find(
-          (name) =>
-            ctx.ns.bladeburner.getBlackOpRank(name) <= ctx.ns.bladeburner.getRank() &&
-            ctx.ns.bladeburner.getActionCountRemaining("Black Op", name) > 0 &&
-            ctx.ns.bladeburner.getActionEstimatedSuccessChance("Black Op", name)[0] >= 0.95
-        ),
-    predicate: (ctx: Context, name: string | undefined) => name !== undefined,
+        .find((name) => ctx.ns.bladeburner.getActionCountRemaining("BlackOp", name) > 0),
+    predicate: (ctx: Context, name: string | undefined) =>
+      name !== undefined &&
+      ctx.ns.bladeburner.getBlackOpRank(name) <= ctx.ns.bladeburner.getRank() &&
+      ctx.ns.bladeburner.getActionEstimatedSuccessChance("BlackOp", name)[0] >= 0.95,
     action: (ctx: Context, name: string | undefined) => {
       if (name === undefined) throw "Invalid name"
-      doBladeburnerAction(ctx, "Black Op", name)
-      return true
+      return SetBladeburnerActionSteps("BlackOp", name)
     },
   }),
 
   new Step({
     name: "Operations",
+    dryRunSafe: true,
     gather: (ctx: Context) =>
       ctx.ns.bladeburner
         .getOperationNames()
@@ -234,13 +261,13 @@ export const BladeburnerSteps = [
     predicate: (ctx: Context, name: string | undefined) => name !== undefined,
     action: (ctx: Context, name: string | undefined) => {
       if (name === undefined) throw "Invalid name"
-      doBladeburnerAction(ctx, "Operation", name)
-      return true
+      return SetBladeburnerActionSteps("Operation", name)
     },
   }),
 
   new Step({
     name: "Contracts",
+    dryRunSafe: true,
     gather: (ctx: Context) =>
       ctx.ns.bladeburner
         .getContractNames()
@@ -253,8 +280,7 @@ export const BladeburnerSteps = [
     predicate: (ctx: Context, name: string | undefined) => name !== undefined,
     action: (ctx: Context, name: string | undefined) => {
       if (name === undefined) throw "Invalid name"
-      doBladeburnerAction(ctx, "Contract", name)
-      return true
+      return SetBladeburnerActionSteps("Contract", name)
     },
   }),
 
