@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Bladeburner } from "./data/bladeburner"
 import { LOG_LEVELS, Logger } from "./log"
 import type { LogLevelType } from "./log"
@@ -54,7 +55,8 @@ export class Context {
 type Gather<DataType> = (ctx: Context) => DataType | Promise<DataType>
 type Predicate<DataType> = (ctx: Context, data: DataType) => boolean | Promise<boolean>
 type Log<DataType> = (ctx: Context, data: DataType) => void | string | Promise<void | string>
-type Action<DataType> = (ctx: Context, data: DataType) => void | boolean | Promise<void | boolean>
+type ActionReturn = void | boolean | Chain | Step<any>[]
+type Action<DataType> = (ctx: Context, data: DataType) => ActionReturn | Promise<ActionReturn>
 
 export class Step<DataType> {
   name: string
@@ -114,9 +116,19 @@ export class Step<DataType> {
         return false
       }
       // ctx.perfStart()
-      const rv = await this.action(ctx, data)
+      let rv = await this.action(ctx, data)
       // ctx.perfEnd(`Step ${this.name} action`)
-      return rv === undefined ? false : rv
+
+      if (rv === undefined) {
+        // Default to false.
+        rv = false
+      } else if (Array.isArray(rv) || rv instanceof Chain) {
+        // Check for Chain or Step[] returns, which mean run that.
+        const chain = rv instanceof Chain ? rv : new Chain(this.name, rv)
+        rv = await chain.run(ctx)
+      }
+
+      return rv
     } else {
       return this.final
     }
