@@ -175,6 +175,19 @@ function SleeveSteps(num: number) {
     // TODO Work for any factions with unpurchased augs.
 
     new Step({
+      name: "LevelUpMainBody",
+      gather: (ctx: Context) =>
+        ctx.ns.sleeve.getSleeveStats(num).strength < 100 ? "MUG" : "HOMICIDE",
+      predicate: (ctx: Context) => ctx.player.skills.strength < 100,
+      action: (ctx: Context, crime: string) => {
+        const task = ctx.ns.sleeve.getTask(num)
+        if (task?.type === "CRIME" && task?.crimeType === crime) return true
+        ctx.ns.sleeve.setToCommitCrime(num, crime)
+        return true
+      },
+    }),
+
+    new Step({
       name: "BackupTask",
       gather: () => undefined,
       predicate: (ctx: Context) => {
