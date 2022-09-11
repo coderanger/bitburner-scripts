@@ -239,7 +239,8 @@ export const BladeburnerSteps = [
     predicate: (ctx: Context, name: string | undefined) =>
       name !== undefined &&
       ctx.ns.bladeburner.getBlackOpRank(name) <= ctx.ns.bladeburner.getRank() &&
-      ctx.ns.bladeburner.getActionEstimatedSuccessChance("BlackOp", name)[0] >= 0.95,
+      ctx.ns.bladeburner.getActionEstimatedSuccessChance("BlackOp", name)[0] >=
+        (ctx.ns.bladeburner.getRank() >= 500_00 ? 0.25 : 0.95),
     action: (ctx: Context, name: string | undefined) => {
       if (name === undefined) throw "Invalid name"
       return SetBladeburnerActionSteps("BlackOp", name)
