@@ -1,7 +1,7 @@
 import { Context, Execute, RunChainStep, StatefulStep, Step } from "./decisionTree"
 import type { GangGenInfo, NS } from "@ns"
 
-const CRIME_GANG_FACTIONS = ["Slum Snakes", "Tetrads", "The Syndicate"]
+const CRIME_GANG_FACTIONS = ["Tetrads", "The Syndicate"]
 const GANG_MEMBER_NAMES = [
   "Number One",
   "Snake Eyes",
