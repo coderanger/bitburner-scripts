@@ -1,6 +1,50 @@
 import { Context, EachStep, Execute, RunChainStep, StatefulStep, Step } from "./decisionTree"
 import type { AugmentPair, NS } from "@ns"
 
+interface GeneralTask {
+  type: string
+}
+
+interface BladeburnerTask {
+  actionType: string
+  actionName: string
+}
+
+type SleeveTask = null | GeneralTask | BladeburnerTask
+
+function SetBladeburnerActionSteps(
+  num: number,
+  action: string,
+  actionType: string | undefined,
+  actionName: string | undefined,
+  type: string | undefined = undefined,
+  contract: string | undefined = undefined
+) {
+  return [
+    new Step({
+      name: "SetBladeburnerAction",
+      gather: (ctx: Context) => ctx.ns.sleeve.getTask(num) as SleeveTask,
+      predicate: (ctx: Context, task: SleeveTask) =>
+        task !== null && "type" in task
+          ? task.type !== type
+          : task?.actionType !== actionType || task?.actionName !== actionName,
+      log: () => `Setting Sleeve ${num} to Bladeburner ${action}`,
+      action: (ctx: Context) => {
+        const ok = ctx.ns.sleeve.setToBladeburnerAction(num, action, contract)
+        if (!ok) throw `Unable to ${action}`
+        return true
+      },
+    }),
+
+    // So we always bail on the parent chain.
+    new Step({
+      name: "TerminateChain",
+      gather: () => undefined,
+      action: () => true,
+    }),
+  ]
+}
+
 function SleeveSteps(num: number) {
   return [
     // Tasking this sleeve.
@@ -88,13 +132,7 @@ function SleeveSteps(num: number) {
       gather: (ctx: Context) => ctx.bladeburner.data?.chaos || 0,
       enter: (ctx: Context, chaos: number) => chaos >= 25,
       exit: (ctx: Context, chaos: number) => chaos <= 1,
-      action: (ctx: Context) => {
-        const task = ctx.ns.sleeve.getTask(num)
-        if (task?.actionType === "General" && task?.actionName === "Diplomacy") return true
-        const ok = ctx.ns.sleeve.setToBladeburnerAction(num, "Diplomacy")
-        if (!ok) throw "Unable to start diplomacy"
-        return true
-      },
+      action: () => SetBladeburnerActionSteps(num, "Diplomacy", "General", "Diplomacy"),
     }),
 
     new StatefulStep({
@@ -111,13 +149,7 @@ function SleeveSteps(num: number) {
         worstSpread !== undefined && worstSpread >= 0.1,
       exit: (ctx: Context, worstSpread: number | undefined) =>
         worstSpread === undefined || worstSpread <= 0.05,
-      action: (ctx: Context) => {
-        const task = ctx.ns.sleeve.getTask(num)
-        if (task?.actionType === "General" && task?.actionName === "Field Analysis") return true
-        const ok = ctx.ns.sleeve.setToBladeburnerAction(num, "Field analysis")
-        if (!ok) throw "Unable to start field analysis"
-        return true
-      },
+      action: () => SetBladeburnerActionSteps(num, "Field analysis", "General", "Field Analysis"),
     }),
 
     new StatefulStep({
@@ -132,13 +164,8 @@ function SleeveSteps(num: number) {
         worstAvailable !== undefined && worstAvailable <= 10,
       exit: (ctx: Context, worstAvailable: number | undefined) =>
         worstAvailable === undefined || worstAvailable >= 50,
-      action: (ctx: Context) => {
-        const task = ctx.ns.sleeve.getTask(num)
-        if (task?.type === "INFILTRATE") return true
-        const ok = ctx.ns.sleeve.setToBladeburnerAction(num, "Infiltrate synthoids")
-        if (!ok) throw "Unable to start infiltration"
-        return true
-      },
+      action: () =>
+        SetBladeburnerActionSteps(num, "Infiltrate synthoids", undefined, undefined, "INFILTRATE"),
     }),
 
     new Step({
@@ -154,6 +181,7 @@ function SleeveSteps(num: number) {
           }
         }
         return ctx.bladeburner.data.contracts
+          .slice()
           .reverse()
           .find((c) => c.remaining > 10 && c.successChance[0] >= 0.85 && !inProgress[c.name])?.name
       },
@@ -164,11 +192,14 @@ function SleeveSteps(num: number) {
       },
       action: (ctx: Context, name: string | undefined) => {
         if (name === undefined) throw "Invalid name"
-        const task = ctx.ns.sleeve.getTask(num)
-        if (task?.actionType === "Contracts" && task?.actionName === name) return true
-        const ok = ctx.ns.sleeve.setToBladeburnerAction(num, "Take on contracts", name)
-        if (!ok) throw `Unable to start contract ${name}`
-        return true
+        return SetBladeburnerActionSteps(
+          num,
+          "Take on contracts",
+          "Contracts",
+          name,
+          undefined,
+          name
+        )
       },
     }),
 
