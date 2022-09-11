@@ -26,8 +26,17 @@ export const AugmentationsSteps = [
         available[0].aug.name
       )
       if (ok) {
-        ctx.ns.singularity.installAugmentations("main.js")
+        ctx.data["purchasedFastAug"] = true
       }
+    },
+  }),
+  new Step({
+    name: "CheckFast",
+    gather: () => undefined,
+    predicate: (ctx: Context) =>
+      ctx.data["purchasedFastAug"] === true && ctx.player.playtimeSinceLastAug >= 60_000,
+    action: (ctx: Context) => {
+      ctx.ns.singularity.installAugmentations("main.js")
     },
   }),
 ]
